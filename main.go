@@ -4,78 +4,124 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-func prettyJson(data any) string {
-	prettyJSON, err := json.MarshalIndent(data, "", "    ")
-	if err != nil {
-		return fmt.Sprintf("Error formatting JSON: %v", err)
-	}
-	return string(prettyJSON)
-}
-
-type ProcessInfo struct {
+// CompleteRawProcessInfo stores comprehensive static metadata about an executable footprint
+type CompleteRawProcessInfo struct {
 	PID        int32    `json:"pid"`
 	Name       string   `json:"name"`
-	Path       string   `json:"path"`
-	CmdLine    string   `json:"cmdline"`
-	Cwd        string   `json:"cwd"`
-	Username   string   `json:"username"`
-	Status     []string `json:"status"`
-	CreateTime int64    `json:"create_time"`
+	Path       string   `json:"path,omitempty"`
+	CmdLine    string   `json:"cmdline,omitempty"`
+	Cwd        string   `json:"cwd,omitempty"`
+	Username   string   `json:"username,omitempty"`
+	Status     []string `json:"status,omitempty"`
+	CreateTime int64    `json:"create_time,omitempty"`
 }
 
-type RawState struct {
-	Connection net.ConnectionStat `json:"connection"`
-	Process    ProcessInfo        `json:"process"`
+// EnrichedConnection maps raw network sockets to highly readable security structures
+type EnrichedConnection struct {
+	net.ConnectionStat
+	ProtocolType string `json:"protocol_type"` // "TCP" or "UDP"
+	IPVersion    string `json:"ip_version"`    // "IPv4" or "IPv6"
+	Direction    string `json:"direction"`     // "INBOUND" or "OUTBOUND"
+	IsLoopback   bool   `json:"is_loopback"`   // true if internal loopback traffic
 }
 
+// LogEvent represents our lean, relational logging schema envelope
 type LogEvent struct {
-	Timestamp string   `json:"timestamp"`
-	Action    string   `json:"action"` // "OPEN" or "CLOSE"
-	Process   RawState `json:"process"`
+	Timestamp   string                 `json:"timestamp"`
+	Action      string                 `json:"action"` // "PROC_START", "OPEN", "CLOSED"
+	ThreatFlags []string               `json:"threat_flags,omitempty"`
+	Connection  *EnrichedConnection    `json:"connection,omitempty"`
+	Process     CompleteRawProcessInfo `json:"process"`
 }
 
-// LogToJsonl handles opening, formatting, and appending to your log file
+// Global state machine tracking caches
+var masterData = make(map[string]EnrichedConnection)
+var knownPIDs = make(map[int32]bool)
+
+// LogToJsonl writes a single flat string record directly to our database target file
 func LogToJsonl(filename string, event LogEvent) error {
-	// 1. Open the file or create it if it's missing.
-	// O_APPEND ensures new entries are typed directly onto the bottom of the file.
 	file, err := os.OpenFile(filename, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		return fmt.Errorf("failed to open log file: %w", err)
 	}
-	defer file.Close() // Ensure the system file handle resource releases when done
+	defer file.Close()
 
-	// 2. Marshal the struct into a compact, single-line JSON byte array
-	// (Do NOT use MarshalIndent here; JSONL require everything on one line!)
 	jsonData, err := json.Marshal(event)
 	if err != nil {
 		return fmt.Errorf("failed to marshal event data: %w", err)
 	}
 
-	// 3. Write the JSON payload to the file stream
-	_, err = file.Write(jsonData)
-	if err != nil {
+	if _, err = file.Write(jsonData); err != nil {
 		return fmt.Errorf("failed writing data bytes: %w", err)
 	}
-
-	// 4. CRITICAL: Append the newline token to terminate the line boundary
-	_, err = file.WriteString("\n")
-	if err != nil {
+	if _, err = file.WriteString("\n"); err != nil {
 		return fmt.Errorf("failed writing line terminator: %w", err)
 	}
-
 	return nil
 }
 
+// EnrichAndAnalyze interprets protocol identifiers from the raw socket connection
+func EnrichAndAnalyze(conn net.ConnectionStat) EnrichedConnection {
+	enriched := EnrichedConnection{ConnectionStat: conn}
+
+	// 1. Normalize Protocols
+	if conn.Type == 1 {
+		enriched.ProtocolType = "TCP"
+	} else if conn.Type == 2 {
+		enriched.ProtocolType = "UDP"
+	}
+
+	// 2. Identify IP Version
+	if conn.Family == 2 {
+		enriched.IPVersion = "IPv4"
+	} else if conn.Family == 23 {
+		enriched.IPVersion = "IPv6"
+	}
+
+	// 3. Evaluate Connection Direction
+	if conn.Status == "LISTEN" || (conn.Raddr.IP == "" && conn.Raddr.Port == 0) {
+		enriched.Direction = "INBOUND"
+	} else {
+		enriched.Direction = "OUTBOUND"
+	}
+
+	// 4. Identify Loopback Internal Noise
+	if conn.Laddr.IP == "127.0.0.1" || conn.Laddr.IP == "::1" || conn.Raddr.IP == "127.0.0.1" || conn.Raddr.IP == "::1" {
+		enriched.IsLoopback = true
+	}
+
+	return enriched
+}
+
+// AuditThreatIndicators inspects the host metadata block for risk signatures
+func AuditThreatIndicators(proc CompleteRawProcessInfo) []string {
+	var flags []string
+	lowerPath := strings.ToLower(proc.Path)
+
+	if strings.Contains(lowerPath, "\\appdata\\local\\temp") || strings.Contains(lowerPath, "\\windows\\temp") {
+		flags = append(flags, "EXEC_FROM_TEMP_PATH")
+	}
+	if strings.Contains(lowerPath, "\\users\\") && strings.Contains(lowerPath, "\\downloads\\") {
+		flags = append(flags, "EXEC_FROM_DOWNLOADS_FOLDER")
+	}
+	if proc.Username == "NT AUTHORITY\\SYSTEM" {
+		if strings.Contains(lowerPath, "chrome.exe") || strings.Contains(lowerPath, "brave.exe") || strings.Contains(lowerPath, "music") {
+			flags = append(flags, "SUSPICIOUS_SYSTEM_PRIVILEGE_MISMATCH")
+		}
+	}
+	return flags
+}
+
 func main() {
-	var masterData = make(map[string]RawState)
 	isInitialRun := true
-	fmt.Println("=== NetShip Unfiltered Core Daemon Started ===")
+	fmt.Println("=== NetShip Relational Security Daemon Online ===")
 
 	for {
 		connections, err := net.Connections("all")
@@ -88,22 +134,17 @@ func main() {
 		aliveNow := make(map[string]bool)
 
 		for _, conn := range connections {
-			// Determine the protocol string based on Socket Type (1=TCP, 2=UDP)
-			protoStr := "TCP"
-			if conn.Type == 2 {
-				protoStr = "UDP"
-			}
-
-			// Generate a completely unique identifier for this specific socket connection
-			socketKey := fmt.Sprintf("%s-%s:%d", protoStr, conn.Laddr.IP, conn.Laddr.Port)
+			enriched := EnrichAndAnalyze(conn)
+			socketKey := fmt.Sprintf("%s-%s:%d", enriched.ProtocolType, enriched.Laddr.IP, enriched.Laddr.Port)
 			aliveNow[socketKey] = true
 
 			_, alreadyTracked := masterData[socketKey]
 
 			if !alreadyTracked {
-				var procDetails ProcessInfo
+				var procDetails CompleteRawProcessInfo
 				procDetails.PID = conn.Pid
 
+				// Core Process Registration Phase
 				if conn.Pid > 0 {
 					p, err := process.NewProcess(conn.Pid)
 					if err == nil {
@@ -114,50 +155,78 @@ func main() {
 						procDetails.Username, _ = p.Username()
 						procDetails.Status, _ = p.Status()
 						procDetails.CreateTime, _ = p.CreateTime()
+
+						// FIRST-TIME DISCOVERY: Process Identity Tracing
+						if !knownPIDs[conn.Pid] {
+							knownPIDs[conn.Pid] = true
+							threats := AuditThreatIndicators(procDetails)
+
+							// Log the full process identity data ONCE
+							LogToJsonl("netship.jsonl", LogEvent{
+								Timestamp:   time.Now().Format(time.RFC3339),
+								Action:      "PROC_START",
+								ThreatFlags: threats,
+								Process:     procDetails,
+							})
+							fmt.Printf("🏷️  [PROC_START] Captured Identity for PID %d (%s)\n", conn.Pid, procDetails.Name)
+						}
 					} else {
-						procDetails.Name = "SYSTEM / Unknown"
+						procDetails.Name = "SYSTEM / Access Denied"
 						procDetails.Path = "ACCESS_DENIED"
 					}
+				} else if conn.Pid == 0 {
+					procDetails.Name = "Idle Kernel Context"
 				}
 
-				newState := RawState{
-					Connection: conn,
-					Process:    procDetails,
-				}
+				// Cache our local socket reference mapping
+				masterData[socketKey] = enriched
 
-				masterData[socketKey] = newState
+				// Log network exposures dynamically only when PAST the initial boot baseline scan
+				if !isInitialRun {
+					// RELATIONAL OPTIMIZATION: We drop all deep string assets here!
+					leanProc := CompleteRawProcessInfo{
+						PID:  procDetails.PID,
+						Name: procDetails.Name,
+					}
 
-				if isInitialRun {
-					fmt.Printf("[INITIAL BASELINE] Socket %s Baseline Captured:\n%s\n\n", socketKey, prettyJson(newState))
-				} else {
-					fmt.Printf("🆕 [SOCKET OPENED] %s Alert Raw Dump:\n%s\n\n", socketKey, prettyJson(newState))
 					LogToJsonl("netship.jsonl", LogEvent{
-						Timestamp: time.Now().Format(time.RFC3339),
-						Action:    "OPEN",
-						Process:   newState,
+						Timestamp:  time.Now().Format(time.RFC3339),
+						Action:     "OPEN",
+						Connection: &enriched,
+						Process:    leanProc,
 					})
+					fmt.Printf("🆕 [SOCKET OPENED] %s mapped to PID %d\n", socketKey, leanProc.PID)
 				}
 			}
 		}
 
-		// Differential Deletion Pass for closed/dropped sockets
+		// Differential Deletion Pass for drops
 		for trackedKey, trackedState := range masterData {
 			if !aliveNow[trackedKey] {
-				fmt.Printf("🛑 [SOCKET CLOSED] %s Closure Raw Dump:\n%s\n\n", trackedKey, prettyJson(trackedState))
+				if !isInitialRun {
+					// Relational Optimization rule applied to closure logging fields too
+					leanProc := CompleteRawProcessInfo{
+						PID:  trackedState.Pid,
+						Name: "Detached",
+					}
+
+					LogToJsonl("netship.jsonl", LogEvent{
+						Timestamp:  time.Now().Format(time.RFC3339),
+						Action:     "CLOSED",
+						Connection: &trackedState,
+						Process:    leanProc,
+					})
+					fmt.Printf("🛑 [SOCKET CLOSED] %s dropped cleanly\n", trackedKey)
+				}
 				delete(masterData, trackedKey)
-				LogToJsonl("netship.jsonl", LogEvent{
-					Timestamp: time.Now().Format(time.RFC3339),
-					Action:    "CLOSED",
-					Process:   trackedState,
-				})
 			}
 		}
 
 		if isInitialRun {
 			isInitialRun = false
-			fmt.Println("=== Initial Baseline Established. Continuously Auditing All Sockets... ===")
+			fmt.Println("=== Initial System Baseline Saved. Monitoring Network Transitions... ===")
 		}
 
-		time.Sleep(5 * time.Second)
+		time.Sleep(3 * time.Second)
 	}
 }
