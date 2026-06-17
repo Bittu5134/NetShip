@@ -1,0 +1,183 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>NetShip — EDR Security Command Center</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+</head>
+<body>
+
+  <div class="app-container">
+    <header>
+      <div class="brand-space">
+        <div id="engine-pulse" class="pulse-indicator idle"></div>
+        <span>NETSHIP // EDR DASHBOARD RESILIENT PORTAL</span>
+      </div>
+
+      <div class="global-search-container">
+        <input type="text" id="global-search" placeholder="🔍 Search PID, GUID, Image Name, Local/Remote IP, SHA256, Threat Flags...">
+      </div>
+
+      <div style="display: flex; gap: 8px; align-items: center;">
+        <span id="session-lbl" style="color: var(--text-muted); font-family: var(--font-mono);">LIVE FEED</span>
+        <button id="btn-start" class="btn-primary">START SCAN</button>
+        <button id="btn-stop" style="color: var(--accent-alert);">STOP</button>
+      </div>
+    </header>
+
+    <div class="workspace">
+      <nav>
+        <div class="nav-group-title">Realtime Monitoring</div>
+        <div class="nav-link active" data-target="overview">◈ Overview Dashboard</div>
+        <div class="nav-link" data-target="network">⇄ Network Interceptions</div>
+        <div class="nav-link" data-target="processes">⬡ Process Register</div>
+        <div class="nav-link" data-target="lineage">🌳 Process Lineage Tree</div>
+        <div class="nav-link" data-target="hashes">⊞ Hash Reputations</div>
+        
+        <div class="nav-group-title">Analytics & Metrics</div>
+        <div class="nav-link" data-target="statistics">📊 Performance & Statistics</div>
+
+        <div class="nav-group-title">Historical Data</div>
+        <div class="nav-link" data-target="history">≡ Session Index</div>
+        <div class="nav-link" data-target="compare">⚖ Cross-Comparison</div>
+      </nav>
+
+      <main id="view-viewport">
+        <div id="panel-overview" class="panel active">
+          <div class="metrics-grid">
+            <div class="metric-card"><div class="title">Intercepted Signals</div><div class="value" id="count-net">—</div></div>
+            <div class="metric-card"><div class="title">Tracked Processes</div><div class="value" id="count-proc">—</div></div>
+            <div class="metric-card"><div class="title">Audited Hashes</div><div class="value" id="count-hash">—</div></div>
+            <div class="metric-card"><div class="title">Flagged Threats</div><div class="value" id="count-threat" style="color: var(--accent-alert);">0</div></div>
+          </div>
+
+          <h3 style="margin-bottom: 12px; letter-spacing: 0.5px;">CRITICAL OUTBOUND CONNECTIONS</h3>
+          <div class="scannable-table-wrapper">
+            <table>
+              <thead>
+                <tr><th>Timestamp</th><th>Action</th><th>Remote Address</th><th>Port</th><th>Protocol</th><th>Status</th></tr>
+              </thead>
+              <tbody id="table-overview-net"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="panel-network" class="panel">
+          <div style="display:flex; justify-content: space-between; margin-bottom: 12px;">
+            <h3>NETWORK INTERCEPTIONS</h3>
+            <div>
+              <input type="text" id="filter-net-query" placeholder="Advanced query (e.g. remote_port==443 or direction==OUTBOUND)" style="background:#161924; border:1px solid var(--border-subtle); padding:6px 12px; color:#fff; border-radius:4px; width:360px; font-family:var(--font-mono); font-size:11px;">
+            </div>
+          </div>
+          <div class="scannable-table-wrapper">
+            <table>
+              <thead>
+                <tr><th>Timestamp</th><th>Action</th><th>Local Socket</th><th>Remote Socket</th><th>Proto</th><th>Dir</th><th>State</th></tr>
+              </thead>
+              <tbody id="table-network-all"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="panel-processes" class="panel">
+          <h3 style="margin-bottom: 12px;">ACTIVE TARGET PROCESS REGISTRY</h3>
+          <div class="scannable-table-wrapper">
+            <table>
+              <thead>
+                <tr><th>Timestamp</th><th>PID</th><th>Image Name</th><th>Owner</th><th>Binary Path</th><th>Indicators</th></tr>
+              </thead>
+              <tbody id="table-processes-all"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="panel-lineage" class="panel">
+          <h3 style="margin-bottom: 12px;">PARENT-CHILD LINEAGE ARTIFACT CORRELATION</h3>
+          <div id="tree-container" style="background: var(--surface-base); padding: 20px; border-radius: 6px; border: 1px solid var(--border-subtle); min-height: 400px;"></div>
+        </div>
+
+        <div id="panel-hashes" class="panel">
+          <h3 style="margin-bottom: 12px;">SHA-256 BINARY EVALUATIONS</h3>
+          <div class="scannable-table-wrapper">
+            <table>
+              <thead>
+                <tr><th>Timestamp</th><th>Executable Name</th><th>SHA-256 Signature</th><th>Reputation Assessment</th></tr>
+              </thead>
+              <tbody id="table-hashes-all"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="panel-statistics" class="panel">
+          <h3 style="margin-bottom: 16px;">EDR HISTOGRAM & METRIC SIGNAL TELEMETRY</h3>
+          <div class="charts-container-grid">
+            <div class="chart-card">
+              <h4>Protocol Distribution Matrix</h4>
+              <canvas id="chart-protocols"></canvas>
+            </div>
+            <div class="chart-card">
+              <h4>Threat Risk Breakdown</h4>
+              <canvas id="chart-threats"></canvas>
+            </div>
+            <div class="chart-card" style="grid-column: span 2;">
+              <h4>Outbound Traffic Heatmap Volumetrics</h4>
+              <canvas id="chart-traffic-timeline"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <div id="panel-history" class="panel">
+          <h3 style="margin-bottom: 12px;">HISTORICAL SESSION DIRECTORY</h3>
+          <div class="scannable-table-wrapper">
+            <table>
+              <thead>
+                <tr><th>Session Identification String</th><th>Initialization Point</th><th>Network Events</th><th>Processes Observed</th><th>Threat Violations</th></tr>
+              </thead>
+              <tbody id="table-history-sessions"></tbody>
+            </table>
+          </div>
+        </div>
+
+        <div id="panel-compare" class="panel">
+          <h3 style="margin-bottom: 12px;">CROSS-SESSION EVALUATION MATRIX</h3>
+          <div style="margin-bottom: 16px; display:flex; gap:10px;">
+            <input type="text" id="comp-session-a" placeholder="Session ID Alpha" style="background:#161924; border:1px solid var(--border-subtle); padding:6px; color:#fff; border-radius:4px;">
+            <input type="text" id="comp-session-b" placeholder="Session ID Beta" style="background:#161924; border:1px solid var(--border-subtle); padding:6px; color:#fff; border-radius:4px;">
+            <button id="btn-execute-compare" class="btn-primary">DIFFERENTIAL ANALYSIS</button>
+          </div>
+          <div class="comparison-matrix">
+            <div class="matrix-column">
+              <h4>SESSION ALPHA ANOMALIES</h4>
+              <ul id="matrix-alpha-diff" style="margin-top:10px; list-style:none; display:flex; flex-direction:column; gap:6px;"></ul>
+            </div>
+            <div class="matrix-column">
+              <h4>SESSION BETA ANOMALIES</h4>
+              <ul id="matrix-beta-diff" style="margin-top:10px; list-style:none; display:flex; flex-direction:column; gap:6px;"></ul>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <div id="forensic-drawer" class="forensic-drawer">
+    <div class="drawer-header">
+      <h3 id="drawer-title-id">Object Analysis</h3>
+      <button id="drawer-close-btn" style="background:none; border:none; font-size:18px; color:var(--text-muted);">✕</button>
+    </div>
+    <div class="drawer-tabs">
+      <div class="drawer-tab active" data-tab="summary">Normalized Graph Summary</div>
+      <div class="drawer-tab" data-tab="json">Raw Structural JSON</div>
+    </div>
+    <div class="drawer-body">
+      <div id="drawer-content-summary"></div>
+      <div id="drawer-content-json" style="display:none;">
+        <pre><code id="drawer-json-pre"></code></pre>
+      </div>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

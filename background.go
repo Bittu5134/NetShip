@@ -18,12 +18,12 @@ import (
 )
 
 var (
-	SessionDataDir string
-	NetworkLog     = "network.jsonl"
-	ProcessLog     = "processes.jsonl"
-	ChildLog       = "children.jsonl"
-	GeoLog         = "geolocation.jsonl"
-	HashLog        = "threat_hashes.jsonl"
+	SessionDataDir  string
+	NetworkLog      = "network.jsonl"
+	ProcessLog      = "processes.jsonl"
+	ChildLog        = "children.jsonl"
+	GeoLog          = "geolocation.jsonl"
+	HashLog         = "threat_hashes.jsonl"
 	MaliciousDbFile = "malicious_hashes.txt"
 )
 
@@ -87,14 +87,13 @@ type HashAuditData struct {
 	Status      string `json:"status"`
 }
 
-// Global Thread-Safe Caches and Mutex Protections
+// Thread-safe isolation caches
 var socketStateCache = make(map[string]LeanConnectionMeta)
 var processGuidRegistry = make(map[int32]string)
 var pidReferenceCounter = make(map[int32]int)
 var sysHostname = "unknown-host"
 var fileWriteLock sync.Mutex
 
-// Local Anti-Virus and Geolocation Shield States
 var geoCache = make(map[string]GeoCacheData)
 var geoCacheLock sync.RWMutex
 
@@ -138,28 +137,28 @@ func DownloadMaliciousDatabase(dbPath string) error {
 		return nil
 	}
 
-	fmt.Println("📥 [ANTIVIRUS DB] Local threat list missing. Downloading from remote repository...")
+	fmt.Println("📥 [ANTIVIRUS DB] Local threat signatures missing. Syncing from remote repository...")
 	url := "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/refs/heads/main/full-hash-sha256-aa.txt"
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return fmt.Errorf("network error fetching database: %w", err)
+		return fmt.Errorf("network database sync mismatch: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server returned error code: %s", resp.Status)
+		return fmt.Errorf("server target dropped payload with status: %s", resp.Status)
 	}
 
 	out, err := os.OpenFile(dbPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("failed preparing database container: %w", err)
+		return fmt.Errorf("failed creating threat signature database: %w", err)
 	}
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
 	if err != nil {
-		return fmt.Errorf("failed writing data streams: %w", err)
+		return fmt.Errorf("failed committing signature streams: %w", err)
 	}
 
 	fmt.Println("✨ [ANTIVIRUS DB] Threat signature asset downloaded successfully.")
@@ -220,12 +219,11 @@ func AuditFileHash(procGuid string, filePath string) {
 				})
 			}
 			memRegistryLock.Unlock()
-			fmt.Printf("🚨 [ANTIVIRUS] LOCAL THREAT MATCH! %s matched a known malicious hash!\n", fName)
+			fmt.Printf("🚨 [ANTIVIRUS] LOCAL THREAT MATCH! %s matched signature footprint!\n", fName)
 			return
 		}
 
 		WriteEvent(HashLog, hashLogData)
-		fmt.Printf("🔒 [HASH] SHA256 logged for %s: %s\n", fName, shaSignature[:12]+"...")
 	}()
 }
 
@@ -268,7 +266,6 @@ func AuditChildProcesses(parentPid int32, parentGuid string) {
 			ChildName:         childName,
 		}
 		WriteEvent(ChildLog, childEvent)
-		fmt.Printf("🌿 [CHILD] Parent %s spawned %s (PID %d)\n", parentGuid[:8], childName, childPid)
 	}
 }
 
@@ -317,7 +314,6 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 			geoCacheLock.Unlock()
 
 			WriteEvent(GeoLog, geoData)
-			fmt.Printf("🌍 [GEO] Bound IP %s (PID %d) to %s, %s\n", normalizedIP, pid, result.City, result.Country)
 		}
 	}()
 }
@@ -440,7 +436,7 @@ func StartBackgroundService() {
 	SessionDataDir = filepath.Join("data", sessionTimeToken)
 
 	if err := DownloadMaliciousDatabase(MaliciousDbFile); err != nil {
-		fmt.Printf("⚠️  [ANTIVIRUS DB] Automated synchronization failed: %v\n", err)
+		fmt.Printf("⚠️  [ANTIVIRUS DB] Automated download failure: %v\n", err)
 	}
 
 	if dbFile, err := os.Open(MaliciousDbFile); err == nil {
@@ -456,13 +452,8 @@ func StartBackgroundService() {
 		}
 		blacklistLock.Unlock()
 		dbFile.Close()
-		fmt.Printf("📦 [ANTIVIRUS DB] Loaded %d malware definitions directly out of root container space.\n", dbCount)
-	} else {
-		fmt.Println("⚠️  [ANTIVIRUS DB] Root level malicious_hashes.txt not found. Offline lookups disabled.")
+		fmt.Printf("📦 [ANTIVIRUS DB] Loaded %d signature records out of system workspace.\n", dbCount)
 	}
-
-	fmt.Printf("📂 [SESSION ENGINE] Tracking service online. Subfolder target destination: %s/\n", SessionDataDir)
-	fmt.Println("=== NetShip Optimized Security Engine Running ===")
 
 	for {
 		connections, err := net.Connections("all")
@@ -472,10 +463,9 @@ func StartBackgroundService() {
 		}
 
 		aliveNow := make(map[string]bool)
-		myPID := int32(os.Getpid()) // Cache our own process identifier token
+		myPID := int32(os.Getpid())
 
 		for _, conn := range connections {
-			// ECHO CORRECTION BLOCK: Completely ignore socket frames owned by NetShip itself
 			if conn.Pid == myPID {
 				continue
 			}
@@ -489,7 +479,6 @@ func StartBackgroundService() {
 			if meta.Direction == "OUTBOUND" && !meta.IsLoopback {
 				GeolocateRemoteIP(meta.RemoteIP, conn.Pid, guid)
 			}
-
 			if conn.Pid > 0 {
 				AuditChildProcesses(conn.Pid, guid)
 			}
