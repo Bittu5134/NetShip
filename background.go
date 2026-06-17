@@ -51,6 +51,7 @@ type ProcessRegistryData struct {
 	Cwd         string   `json:"cwd,omitempty"`
 	Username    string   `json:"username,omitempty"`
 	CreateTime  int64    `json:"create_time,omitempty"`
+	ThreatScore int      `json:"threat_score"`
 	ThreatFlags []string `json:"threat_flags,omitempty"`
 }
 
@@ -77,6 +78,8 @@ type GeoCacheData struct {
 	Country     string `json:"country"`
 	City        string `json:"city"`
 	ISP         string `json:"isp"`
+	Latitude    float64 `json:"lat"`
+	Longitude   float64 `json:"lon"`
 }
 
 type HashAuditData struct {
@@ -87,7 +90,6 @@ type HashAuditData struct {
 	Status      string `json:"status"`
 }
 
-// Thread-safe isolation caches
 var socketStateCache = make(map[string]LeanConnectionMeta)
 var processGuidRegistry = make(map[int32]string)
 var pidReferenceCounter = make(map[int32]int)
@@ -128,7 +130,6 @@ func WriteEvent(filename string, event any) {
 		return
 	}
 	defer file.Close()
-
 	_ = json.NewEncoder(file).Encode(event)
 }
 
@@ -136,40 +137,61 @@ func DownloadMaliciousDatabase(dbPath string) error {
 	if _, err := os.Stat(dbPath); err == nil {
 		return nil
 	}
-
-	fmt.Println("📥 [ANTIVIRUS DB] Local threat signatures missing. Syncing from remote repository...")
 	url := "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/refs/heads/main/full-hash-sha256-aa.txt"
 	client := &http.Client{Timeout: 15 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		return fmt.Errorf("network database sync mismatch: %w", err)
+		return err
 	}
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		return fmt.Errorf("server target dropped payload with status: %s", resp.Status)
-	}
-
 	out, err := os.OpenFile(dbPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
-		return fmt.Errorf("failed creating threat signature database: %w", err)
+		return err
 	}
 	defer out.Close()
-
 	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		return fmt.Errorf("failed committing signature streams: %w", err)
+	return err
+}
+
+func EvaluateThreatVitals(p *process.Process, path, username, name string) (int, []string) {
+	var flags []string
+	score := 0
+	lowerPath := strings.ToLower(path)
+	lowerName := strings.ToLower(name)
+
+	// Vector 1: Static Shell & Script Execution Engines
+	if strings.Contains(lowerName, "powershell") || strings.Contains(lowerName, "cmd.exe") || strings.Contains(lowerName, "wscript") || strings.Contains(lowerName, "mshta") {
+		flags = append(flags, "SUSPICIOUS_SHELL_ENGINE_EXECUTION")
+		score += 25
 	}
 
-	fmt.Println("✨ [ANTIVIRUS DB] Threat signature asset downloaded successfully.")
-	return nil
+	// Vector 2: Path Location Exploitations
+	if strings.Contains(lowerPath, "\\appdata\\local\\temp") || strings.Contains(lowerPath, "\\windows\\temp") {
+		flags = append(flags, "EXEC_FROM_TEMP_PATH")
+		score += 20
+	}
+	if strings.Contains(lowerPath, "\\users\\") && strings.Contains(lowerPath, "\\downloads\\") {
+		flags = append(flags, "EXEC_FROM_DOWNLOADS_FOLDER")
+		score += 15
+	}
+
+	// Vector 3: Volumetric Network Sockets Check
+	if conns, err := p.Connections(); err == nil && len(conns) > 15 {
+		flags = append(flags, "EXCESSIVE_OUTBOUND_NETWORK_BURST")
+		score += 20
+	}
+
+	if score > 100 {
+		score = 100
+	}
+	return score, flags
 }
 
 func AuditFileHash(procGuid string, filePath string) {
 	if filePath == "" || filePath == "ACCESS_DENIED" {
 		return
 	}
-
 	hashCacheLock.Lock()
 	if loggedHashes[procGuid] {
 		hashCacheLock.Unlock()
@@ -189,14 +211,12 @@ func AuditFileHash(procGuid string, filePath string) {
 		if _, err := io.Copy(hasher, file); err != nil {
 			return
 		}
-
 		shaSignature := fmt.Sprintf("%x", hasher.Sum(nil))
-		fName := filepath.Base(filePath)
 
 		hashLogData := HashAuditData{
 			Timestamp:   time.Now().Format(time.RFC3339),
 			ProcessGuid: procGuid,
-			FileName:    fName,
+			FileName:    filepath.Base(filePath),
 			SHA256:      shaSignature,
 			Status:      "CLEAN",
 		}
@@ -211,7 +231,8 @@ func AuditFileHash(procGuid string, filePath string) {
 
 			memRegistryLock.Lock()
 			if procData, exists := activeProcessMemRegistry[procGuid]; exists {
-				procData.ThreatFlags = append(procData.ThreatFlags, "KNOWN_MALWARE_HASH_MATCH (LOCAL_DB)")
+				procData.ThreatScore = 100
+				procData.ThreatFlags = append(procData.ThreatFlags, "MALICIOUS_HASH_REPUTATION_MATCH")
 				WriteEvent(ProcessLog, UnifiedLogEvent{
 					Timestamp: time.Now().Format(time.RFC3339),
 					Action:    "THREAT_ALERT",
@@ -219,10 +240,8 @@ func AuditFileHash(procGuid string, filePath string) {
 				})
 			}
 			memRegistryLock.Unlock()
-			fmt.Printf("🚨 [ANTIVIRUS] LOCAL THREAT MATCH! %s matched signature footprint!\n", fName)
 			return
 		}
-
 		WriteEvent(HashLog, hashLogData)
 	}()
 }
@@ -232,21 +251,17 @@ func AuditChildProcesses(parentPid int32, parentGuid string) {
 	if err != nil {
 		return
 	}
-
 	children, err := p.Children()
 	if err != nil {
 		return
 	}
-
 	for _, child := range children {
 		childPid := child.Pid
 		childName, _ := child.Name()
 		cTime, _ := child.CreateTime()
-
 		if childName == "" {
-			childName = "Transient Subprocess / Short Lifespan Context"
+			childName = "Transient Process"
 		}
-
 		childGuid := GenerateProcessGuid(childPid, cTime)
 		relationshipKey := fmt.Sprintf("%s->%s", parentGuid, childGuid)
 
@@ -258,14 +273,13 @@ func AuditChildProcesses(parentPid int32, parentGuid string) {
 		loggedRelationships[relationshipKey] = true
 		childCacheLock.Unlock()
 
-		childEvent := ChildProcessEvent{
+		WriteEvent(ChildLog, ChildProcessEvent{
 			Timestamp:         time.Now().Format(time.RFC3339),
 			ParentProcessGuid: parentGuid,
 			ChildProcessGuid:  childGuid,
 			ChildPID:          childPid,
 			ChildName:         childName,
-		}
-		WriteEvent(ChildLog, childEvent)
+		})
 	}
 }
 
@@ -273,9 +287,7 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 	if ip == "" || ip == "127.0.0.1" || ip == "::1" || strings.HasPrefix(ip, "10.") || strings.HasPrefix(ip, "192.168.") {
 		return
 	}
-
 	normalizedIP := strings.ToLower(ip)
-
 	geoCacheLock.RLock()
 	_, exists := geoCache[normalizedIP]
 	geoCacheLock.RUnlock()
@@ -284,7 +296,7 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 	}
 
 	go func() {
-		url := fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,city,isp", normalizedIP)
+		url := fmt.Sprintf("http://ip-api.com/json/%s?fields=status,country,city,isp,lat,lon", normalizedIP)
 		resp, err := http.Get(url)
 		if err != nil {
 			return
@@ -292,10 +304,12 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 		defer resp.Body.Close()
 
 		var result struct {
-			Status  string `json:"status"`
-			Country string `json:"country"`
-			City    string `json:"city"`
-			ISP     string `json:"isp"`
+			Status  string  `json:"status"`
+			Country string  `json:"country"`
+			City    string  `json:"city"`
+			ISP     string  `json:"isp"`
+			Lat     float64 `json:"lat"`
+			Lon     float64 `json:"lon"`
 		}
 
 		if err := json.NewDecoder(resp.Body).Decode(&result); err == nil && result.Status == "success" {
@@ -307,12 +321,12 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 				Country:     result.Country,
 				City:        result.City,
 				ISP:         result.ISP,
+				Latitude:    result.Lat,
+				Longitude:   result.Lon,
 			}
-
 			geoCacheLock.Lock()
 			geoCache[normalizedIP] = geoData
 			geoCacheLock.Unlock()
-
 			WriteEvent(GeoLog, geoData)
 		}
 	}()
@@ -320,66 +334,26 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 
 func AnalyzeSocket(conn net.ConnectionStat, guid string) LeanConnectionMeta {
 	meta := LeanConnectionMeta{
-		ProcessGuid:     guid,
-		PID:             conn.Pid,
-		LocalIP:         conn.Laddr.IP,
-		LocalPort:       conn.Laddr.Port,
-		RemoteIP:        conn.Raddr.IP,
-		RemotePort:      conn.Raddr.Port,
-		Status:          conn.Status,
+		ProcessGuid: guid, PID: conn.Pid, LocalIP: conn.Laddr.IP, LocalPort: conn.Laddr.Port,
+		RemoteIP: conn.Raddr.IP, RemotePort: conn.Raddr.Port, Status: conn.Status,
 		IsInternalAgent: conn.Pid == int32(os.Getpid()),
 	}
-
-	if conn.Type == 1 {
-		meta.ProtocolType = "TCP"
-	} else {
-		meta.ProtocolType = "UDP"
-	}
-
-	if conn.Family == 2 {
-		meta.IPVersion = "IPv4"
-	} else {
-		meta.IPVersion = "IPv6"
-	}
-
+	if conn.Type == 1 { meta.ProtocolType = "TCP" } else { meta.ProtocolType = "UDP" }
+	if conn.Family == 2 { meta.IPVersion = "IPv4" } else { meta.IPVersion = "IPv6" }
 	if conn.Status == "LISTEN" || (conn.Raddr.IP == "" && conn.Raddr.Port == 0) {
 		meta.Direction = "INBOUND"
 	} else {
 		meta.Direction = "OUTBOUND"
 	}
-
 	if conn.Laddr.IP == "127.0.0.1" || conn.Laddr.IP == "::1" || conn.Raddr.IP == "127.0.0.1" || conn.Raddr.IP == "::1" {
 		meta.IsLoopback = true
 	}
-
 	return meta
 }
 
-func EvaluateThreats(path, username string) []string {
-	var flags []string
-	lowerPath := strings.ToLower(path)
-
-	if strings.Contains(lowerPath, "\\appdata\\local\\temp") || strings.Contains(lowerPath, "\\windows\\temp") {
-		flags = append(flags, "EXEC_FROM_TEMP_PATH")
-	}
-	if strings.Contains(lowerPath, "\\users\\") && strings.Contains(lowerPath, "\\downloads\\") {
-		flags = append(flags, "EXEC_FROM_DOWNLOADS_FOLDER")
-	}
-	if username == "NT AUTHORITY\\SYSTEM" {
-		if strings.Contains(lowerPath, "chrome.exe") || strings.Contains(lowerPath, "brave.exe") || strings.Contains(lowerPath, "music") {
-			flags = append(flags, "SUSPICIOUS_SYSTEM_PRIVILEGE_MISMATCH")
-		}
-	}
-	return flags
-}
-
 func LazyRegisterProcess(pid int32) string {
-	if pid <= 0 {
-		return "00000000-0000-0000-0000-000000000000"
-	}
-	if guid, exists := processGuidRegistry[pid]; exists {
-		return guid
-	}
+	if pid <= 0 { return "00000000-0000-0000-0000-000000000000" }
+	if guid, exists := processGuidRegistry[pid]; exists { return guid }
 
 	p, err := process.NewProcess(pid)
 	if err != nil {
@@ -398,16 +372,10 @@ func LazyRegisterProcess(pid int32) string {
 	processGuidRegistry[pid] = guid
 
 	go func() {
+		score, flags := EvaluateThreatVitals(p, path, user, name)
 		procData := ProcessRegistryData{
-			ProcessGuid: guid,
-			PID:         pid,
-			Name:        name,
-			Path:        path,
-			CmdLine:     cmd,
-			Cwd:         cwd,
-			Username:    user,
-			CreateTime:  cTime,
-			ThreatFlags: EvaluateThreats(path, user),
+			ProcessGuid: guid, PID: pid, Name: name, Path: path, CmdLine: cmd,
+			Cwd: cwd, Username: user, CreateTime: cTime, ThreatScore: score, ThreatFlags: flags,
 		}
 
 		memRegistryLock.Lock()
@@ -415,44 +383,30 @@ func LazyRegisterProcess(pid int32) string {
 		memRegistryLock.Unlock()
 
 		WriteEvent(ProcessLog, UnifiedLogEvent{
-			Timestamp: time.Now().Format(time.RFC3339),
-			Action:    "PROC_START",
-			Process:   &procData,
+			Timestamp: time.Now().Format(time.RFC3339), Action: "PROC_START", Process: &procData,
 		})
-
 		AuditFileHash(guid, path)
 	}()
-
 	return guid
 }
 
 func StartBackgroundService() {
 	isInitialRun := true
-	if name, err := os.Hostname(); err == nil {
-		sysHostname = name
-	}
+	if name, err := os.Hostname(); err == nil { sysHostname = name }
+	SessionDataDir = filepath.Join("data", time.Now().Format("20060102_150405"))
 
-	sessionTimeToken := time.Now().Format("20060102_150405")
-	SessionDataDir = filepath.Join("data", sessionTimeToken)
-
-	if err := DownloadMaliciousDatabase(MaliciousDbFile); err != nil {
-		fmt.Printf("⚠️  [ANTIVIRUS DB] Automated download failure: %v\n", err)
-	}
-
+	_ = DownloadMaliciousDatabase(MaliciousDbFile)
 	if dbFile, err := os.Open(MaliciousDbFile); err == nil {
 		scanner := bufio.NewScanner(dbFile)
-		dbCount := 0
 		blacklistLock.Lock()
 		for scanner.Scan() {
-			hashLine := strings.TrimSpace(scanner.Text())
-			if hashLine != "" && !strings.HasPrefix(hashLine, "#") {
-				maliciousBlacklist[strings.ToLower(hashLine)] = true
-				dbCount++
+			line := strings.TrimSpace(scanner.Text())
+			if line != "" && !strings.HasPrefix(line, "#") {
+				maliciousBlacklist[strings.ToLower(line)] = true
 			}
 		}
 		blacklistLock.Unlock()
 		dbFile.Close()
-		fmt.Printf("📦 [ANTIVIRUS DB] Loaded %d signature records out of system workspace.\n", dbCount)
 	}
 
 	for {
@@ -461,75 +415,47 @@ func StartBackgroundService() {
 			time.Sleep(2 * time.Second)
 			continue
 		}
-
 		aliveNow := make(map[string]bool)
 		myPID := int32(os.Getpid())
 
 		for _, conn := range connections {
-			if conn.Pid == myPID {
-				continue
-			}
-
+			if conn.Pid == myPID { continue }
 			guid := LazyRegisterProcess(conn.Pid)
 			meta := AnalyzeSocket(conn, guid)
 			socketKey := fmt.Sprintf("%s-%s:%d-%s:%d", meta.ProtocolType, meta.LocalIP, meta.LocalPort, meta.RemoteIP, meta.RemotePort)
-
 			aliveNow[socketKey] = true
 
 			if meta.Direction == "OUTBOUND" && !meta.IsLoopback {
 				GeolocateRemoteIP(meta.RemoteIP, conn.Pid, guid)
 			}
-			if conn.Pid > 0 {
-				AuditChildProcesses(conn.Pid, guid)
-			}
+			if conn.Pid > 0 { AuditChildProcesses(conn.Pid, guid) }
 
-			if _, alreadyTracked := socketStateCache[socketKey]; !alreadyTracked {
+			if _, tracked := socketStateCache[socketKey]; !tracked {
 				socketStateCache[socketKey] = meta
 				pidReferenceCounter[conn.Pid]++
-
 				if !isInitialRun {
-					WriteEvent(NetworkLog, UnifiedLogEvent{
-						Timestamp:  time.Now().Format(time.RFC3339),
-						Action:     "OPEN",
-						Connection: &meta,
-					})
+					WriteEvent(NetworkLog, UnifiedLogEvent{Timestamp: time.Now().Format(time.RFC3339), Action: "OPEN", Connection: &meta})
 				}
 			}
 		}
 
 		for trackedKey, trackedState := range socketStateCache {
-			if strings.Contains(trackedKey, "->") {
-				continue
-			}
-
 			if !aliveNow[trackedKey] {
 				if !isInitialRun {
-					WriteEvent(NetworkLog, UnifiedLogEvent{
-						Timestamp:  time.Now().Format(time.RFC3339),
-						Action:     "CLOSED",
-						Connection: &trackedState,
-					})
+					WriteEvent(NetworkLog, UnifiedLogEvent{Timestamp: time.Now().Format(time.RFC3339), Action: "CLOSED", Connection: &trackedState})
 				}
-
 				pidReferenceCounter[trackedState.PID]--
 				if pidReferenceCounter[trackedState.PID] <= 0 {
 					delete(processGuidRegistry, trackedState.PID)
 					delete(pidReferenceCounter, trackedState.PID)
-
 					memRegistryLock.Lock()
 					delete(activeProcessMemRegistry, trackedState.ProcessGuid)
 					memRegistryLock.Unlock()
 				}
-
 				delete(socketStateCache, trackedKey)
 			}
 		}
-
-		if isInitialRun {
-			isInitialRun = false
-			fmt.Println("=== Baseline Completed. Optimized Pipeline Operational ===")
-		}
-
+		isInitialRun = false
 		time.Sleep(2 * time.Second)
 	}
 }
