@@ -2,10 +2,8 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>NetShip — EDR Security Command Center</title>
+  <title>NetShip EDR — Advanced Threat Hunting</title>
   <link rel="stylesheet" href="styles.css">
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -14,152 +12,108 @@
     <header>
       <div class="brand-space">
         <div id="engine-pulse" class="pulse-indicator idle"></div>
-        <span>NETSHIP // SOC GRADE ANALYTICAL COMMAND CONTROL</span>
+        <span>NETSHIP // EDR COMMAND</span>
       </div>
+
+      <div id="status-banner" class="status-banner offline">
+        SYSTEM OFFLINE
+      </div>
+
       <div class="global-search-container">
-        <input type="text" id="global-search" placeholder="🔍 Search PID, GUID, Image Path, Active Sockets, Threat Metrics...">
+        <input type="text" id="global-search" placeholder="🔍 Deep Search (PID, Hash, IP, Command Line, Country)...">
       </div>
-      <div style="display: flex; gap: 8px; align-items: center;">
-        <span id="session-lbl" style="color: var(--text-muted); font-family: var(--font-mono);">LIVE FEED</span>
-        <button id="btn-start" class="btn-primary">START SCAN</button>
-        <button id="btn-stop" style="color: var(--accent-alert);">STOP</button>
+
+      <div class="header-controls">
+        <button id="btn-start" class="btn-primary">▶ START LIVE SCAN</button>
+        <button id="btn-stop" class="btn-danger">■ STOP</button>
       </div>
     </header>
 
     <div class="workspace">
       <nav>
-        <div class="nav-group-title">Realtime Monitoring</div>
-        <div class="nav-link active" data-target="overview">◈ Overview Dashboard</div>
-        <div class="nav-link" data-target="network">⇄ Network Interceptions</div>
-        <div class="nav-link" data-target="processes">⬡ Process Register</div>
-        <div class="nav-link" data-target="lineage">🌳 Process Lineage Tree</div>
-        <div class="nav-link" data-target="hashes">⊞ Hash Reputations</div>
+        <div class="nav-group-title">Investigations</div>
+        <div class="nav-link active" data-target="overview">◈ Executive Summary</div>
+        <div class="nav-link" data-target="analytics">📊 Advanced Analytics</div>
+        <div class="nav-link" data-target="tree">🌳 Process Lineage Graph</div>
         
-        <div class="nav-group-title">Analytics & Geospatial</div>
-        <div class="nav-link" data-target="statistics">📊 Performance & Statistics</div>
-        <div class="nav-link" data-target="geoportal">🗺 Geographic Intelligence</div>
+        <div class="nav-group-title">Raw Telemetry</div>
+        <div class="nav-link" data-target="network">⇄ Network Sockets</div>
+        <div class="nav-link" data-target="processes">⬡ Process Registry</div>
+        <div class="nav-link" data-target="hashes">⊞ Cryptographic Hashes</div>
 
-        <div class="nav-group-title">Historical Data</div>
-        <div class="nav-link" data-target="history">≡ Session Index</div>
-        <div class="nav-link" data-target="compare">⚖ Cross-Comparison</div>
+        <div class="nav-group-title">Operations</div>
+        <div class="nav-link" data-target="history">≡ Historical Sessions</div>
+        <div class="nav-link" data-target="compare">⚖ Differential Compare</div>
       </nav>
 
       <main id="view-viewport">
         <div id="panel-overview" class="panel active">
           <div class="metrics-grid">
-            <div class="metric-card"><div class="title">Intercepted Signals</div><div class="value" id="count-net">—</div></div>
-            <div class="metric-card"><div class="title">Tracked Processes</div><div class="value" id="count-proc">—</div></div>
-            <div class="metric-card"><div class="title">Audited Hashes</div><div class="value" id="count-hash">—</div></div>
-            <div class="metric-card"><div class="title">Flagged Threats</div><div class="value" id="count-threat" style="color: var(--accent-alert);">0</div></div>
+            <div class="metric-card"><div class="title">Active Processes</div><div class="value" id="count-proc">0</div></div>
+            <div class="metric-card"><div class="title">Network Streams</div><div class="value" id="count-net">0</div></div>
+            <div class="metric-card"><div class="title">Unique Hashes</div><div class="value" id="count-hash">0</div></div>
+            <div class="metric-card"><div class="title">Total Threat Score</div><div class="value danger" id="count-threat">0</div></div>
           </div>
-          <h3 style="margin-bottom: 12px;">CRITICAL OUTBOUND CONNECTIONS</h3>
+          <h3>🚨 LATEST CRITICAL ALERTS</h3>
           <div class="scannable-table-wrapper">
             <table>
-              <thead>
-                <tr><th>Timestamp</th><th>Action</th><th>Remote Address</th><th>Port</th><th>Protocol</th><th>Status</th></tr>
-              </thead>
-              <tbody id="table-overview-net"></tbody>
+              <thead><tr><th>Time</th><th>Target</th><th>Risk Score</th><th>Trigger Flags</th></tr></thead>
+              <tbody id="table-alerts"></tbody>
             </table>
+          </div>
+        </div>
+
+        <div id="panel-analytics" class="panel">
+          <div class="charts-grid">
+            <div class="chart-box"><h4>Top Talker Processes</h4><canvas id="chart-top-procs"></canvas></div>
+            <div class="chart-box"><h4>Global Destinations (Geo)</h4><canvas id="chart-top-geo"></canvas></div>
+            <div class="chart-box"><h4>Network Port Distribution</h4><canvas id="chart-ports"></canvas></div>
+            <div class="chart-box"><h4>Threat Status Breakdown</h4><canvas id="chart-threats"></canvas></div>
+            <div class="chart-box full-width"><h4>Network Activity Timeline</h4><canvas id="chart-timeline"></canvas></div>
+          </div>
+        </div>
+
+        <div id="panel-tree" class="panel">
+          <h3>PROCESS EXECUTION CHAIN</h3>
+          <div id="tree-container" class="tree-container"></div>
+        </div>
+
+        <div id="panel-compare" class="panel">
+          <h3>CROSS-SESSION DIFF ENGINE</h3>
+          <div class="compare-controls">
+            <select id="comp-a" class="dark-input"><option>Select Baseline Session...</option></select>
+            <select id="comp-b" class="dark-input"><option>Select Target Session...</option></select>
+            <button id="btn-exec-compare" class="btn-primary">GENERATE DIFF</button>
+          </div>
+          <div class="comparison-matrix">
+            <div class="matrix-col">
+              <h4 style="color:var(--accent-alert);">[-] Missing in Target (Only in Baseline)</h4>
+              <ul id="diff-missing" class="diff-list"></ul>
+            </div>
+            <div class="matrix-col">
+              <h4 style="color:var(--accent-neon);">[+] New in Target (Not in Baseline)</h4>
+              <ul id="diff-new" class="diff-list"></ul>
+            </div>
           </div>
         </div>
 
         <div id="panel-network" class="panel">
-          <div style="display:flex; justify-content: space-between; margin-bottom: 12px;">
-            <h3>NETWORK INTERCEPTIONS</h3>
-            <input type="text" id="filter-net-query" placeholder="Logical filter expression (e.g. remote_port==443)" style="background:#161924; border:1px solid var(--border-subtle); padding:6px; color:#fff; border-radius:4px; width:300px; font-family:var(--font-mono);">
-          </div>
-          <div class="scannable-table-wrapper">
-            <table>
-              <thead>
-                <tr><th>Timestamp</th><th>Action</th><th>Local Socket</th><th>Remote Socket</th><th>Proto</th><th>Dir</th><th>State</th></tr>
-              </thead>
-              <tbody id="table-network-all"></tbody>
-            </table>
-          </div>
+            <h3>NETWORK STREAMS</h3>
+            <div class="scannable-table-wrapper"><table><thead><tr><th>Time</th><th>PID</th><th>Local</th><th>Remote</th><th>State</th></tr></thead><tbody id="table-network"></tbody></table></div>
         </div>
-
         <div id="panel-processes" class="panel">
-          <h3 style="margin-bottom: 12px;">ACTIVE TARGET PROCESS REGISTRY</h3>
-          <div class="scannable-table-wrapper">
-            <table>
-              <thead>
-                <tr><th>Timestamp</th><th>PID / GUID</th><th>Image Name</th><th>Owner</th><th>Risk Metric</th><th>Indicators</th></tr>
-              </thead>
-              <tbody id="table-processes-all"></tbody>
-            </table>
-          </div>
+            <h3>PROCESS REGISTRY</h3>
+            <div class="scannable-table-wrapper"><table><thead><tr><th>Time</th><th>PID</th><th>Image</th><th>Risk</th><th>Flags</th></tr></thead><tbody id="table-processes"></tbody></table></div>
         </div>
-
-        <div id="panel-lineage" class="panel">
-          <h3 style="margin-bottom: 12px;">PARENT-CHILD LINEAGE ARTIFACT CORRELATION</h3>
-          <div id="tree-container" style="background: var(--surface-base); padding: 20px; border-radius: 6px; border: 1px solid var(--border-subtle);"></div>
-        </div>
-
         <div id="panel-hashes" class="panel">
-          <h3 style="margin-bottom: 12px;">SHA-256 BINARY EVALUATIONS</h3>
-          <div class="scannable-table-wrapper">
-            <table>
-              <thead>
-                <tr><th>Timestamp</th><th>Executable Name</th><th>SHA-256 Signature</th><th>Reputation Assessment</th></tr>
-              </thead>
-              <tbody id="table-hashes-all"></tbody>
-            </table>
-          </div>
+            <h3>HASH REPUTATION</h3>
+            <div class="scannable-table-wrapper"><table><thead><tr><th>Time</th><th>File</th><th>SHA256</th><th>Status</th></tr></thead><tbody id="table-hashes"></tbody></table></div>
         </div>
-
-        <div id="panel-statistics" class="panel">
-          <h3 style="margin-bottom: 16px;">EDR SIGNAL HISTOGRAM TELEMETRY</h3>
-          <div class="charts-container-grid">
-            <div class="chart-wrapper"><canvas id="chart-protocols"></canvas></div>
-            <div class="chart-wrapper"><canvas id="chart-threats"></canvas></div>
-            <div class="chart-wrapper" style="grid-column: span 2;"><canvas id="chart-traffic-timeline"></canvas></div>
-          </div>
-        </div>
-
-        <div id="panel-geoportal" class="panel" style="height: calc(100vh - 48px); padding: 0;">
-          <div id="map-canvas-container" style="width: 100%; height: 100%;"></div>
-        </div>
-
         <div id="panel-history" class="panel">
-          <h3 style="margin-bottom: 12px;">HISTORICAL SESSION DIRECTORY</h3>
-          <div class="scannable-table-wrapper">
-            <table>
-              <thead>
-                <tr><th>Session String</th><th>Initialization Point</th><th>Network Logs</th><th>Processes</th><th>Threat Volume</th></tr>
-              </thead>
-              <tbody id="table-history-sessions"></tbody>
-            </table>
-          </div>
-        </div>
-
-        <div id="panel-compare" class="panel">
-          <h3 style="margin-bottom: 12px;">CROSS-SESSION EVALUATION MATRIX</h3>
-          <div style="margin-bottom: 16px; display:flex; gap:10px;">
-            <input type="text" id="comp-session-a" placeholder="Session ID Alpha" style="background:#161924; border:1px solid var(--border-subtle); padding:6px; color:#fff;">
-            <input type="text" id="comp-session-b" placeholder="Session ID Beta" style="background:#161924; border:1px solid var(--border-subtle); padding:6px; color:#fff;">
-            <button id="btn-execute-compare" class="btn-primary">DIFFERENTIAL ANALYSIS</button>
-          </div>
-          <div class="comparison-matrix">
-            <div class="matrix-column"><h4>ALPHA VARIANCES</h4><ul id="matrix-alpha-diff"></ul></div>
-            <div class="matrix-column"><h4>BETA VARIANCES</h4><ul id="matrix-beta-diff"></ul></div>
-          </div>
+            <h3>SESSION INDEX</h3>
+            <div class="scannable-table-wrapper"><table><thead><tr><th>Session ID</th><th>Time</th><th>Events</th><th>Threats</th></tr></thead><tbody id="table-history"></tbody></table></div>
         </div>
       </main>
-    </div>
-  </div>
-
-  <div id="forensic-drawer" class="forensic-drawer">
-    <div class="drawer-header">
-      <h3 id="drawer-title-id">Object Analysis</h3>
-      <button id="drawer-close-btn" style="background:none; border:none; font-size:18px; color:var(--text-muted);">✕</button>
-    </div>
-    <div class="drawer-tabs">
-      <div class="drawer-tab active" data-tab="summary">Graph Summary</div>
-      <div class="drawer-tab" data-tab="json">Raw Structural JSON</div>
-    </div>
-    <div class="drawer-body">
-      <div id="drawer-content-summary"></div>
-      <div id="drawer-content-json" style="display:none;"><pre><code id="drawer-json-pre"></code></pre></div>
     </div>
   </div>
 
