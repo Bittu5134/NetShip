@@ -2,8 +2,10 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <title>NetShip EDR — Advanced Threat Hunting</title>
+  <title>NetShip EDR Dashboard</title>
   <link rel="stylesheet" href="styles.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
 </head>
 <body>
@@ -12,52 +14,51 @@
     <header>
       <div class="brand-space">
         <div id="engine-pulse" class="pulse-indicator idle"></div>
-        <span>NETSHIP // EDR COMMAND</span>
+        <span>NetShip EDR</span>
       </div>
 
-      <div id="status-banner" class="status-banner offline">
-        SYSTEM OFFLINE
-      </div>
+      <div id="status-banner" class="status-banner offline">SYSTEM OFFLINE</div>
 
       <div class="global-search-container">
-        <input type="text" id="global-search" placeholder="🔍 Deep Search (PID, Hash, IP, Command Line, Country)...">
+        <input type="text" id="global-search" placeholder="Search PID, IP, Name, Hash...">
       </div>
 
       <div class="header-controls">
-        <button id="btn-start" class="btn-primary">▶ START LIVE SCAN</button>
-        <button id="btn-stop" class="btn-danger">■ STOP</button>
+        <button id="btn-start" class="btn-primary">▶ Start Scan</button>
+        <button id="btn-stop" class="btn-danger">■ Stop</button>
       </div>
     </header>
 
     <div class="workspace">
       <nav>
-        <div class="nav-group-title">Investigations</div>
-        <div class="nav-link active" data-target="overview">◈ Executive Summary</div>
-        <div class="nav-link" data-target="analytics">📊 Advanced Analytics</div>
-        <div class="nav-link" data-target="tree">🌳 Process Lineage Graph</div>
+        <div class="nav-group-title">Views</div>
+        <div class="nav-link active" data-target="overview">Overview</div>
+        <div class="nav-link" data-target="analytics">Analytics</div>
+        <div class="nav-link" data-target="map">Network Map</div>
+        <div class="nav-link" data-target="tree">Process Tree</div>
         
-        <div class="nav-group-title">Raw Telemetry</div>
-        <div class="nav-link" data-target="network">⇄ Network Sockets</div>
-        <div class="nav-link" data-target="processes">⬡ Process Registry</div>
-        <div class="nav-link" data-target="hashes">⊞ Cryptographic Hashes</div>
+        <div class="nav-group-title">Data</div>
+        <div class="nav-link" data-target="network">Network Events</div>
+        <div class="nav-link" data-target="processes">Processes</div>
+        <div class="nav-link" data-target="hashes">File Hashes</div>
 
-        <div class="nav-group-title">Operations</div>
-        <div class="nav-link" data-target="history">≡ Historical Sessions</div>
-        <div class="nav-link" data-target="compare">⚖ Differential Compare</div>
+        <div class="nav-group-title">History</div>
+        <div class="nav-link" data-target="history">Sessions</div>
+        <div class="nav-link" data-target="compare">Compare</div>
       </nav>
 
       <main id="view-viewport">
         <div id="panel-overview" class="panel active">
           <div class="metrics-grid">
             <div class="metric-card"><div class="title">Active Processes</div><div class="value" id="count-proc">0</div></div>
-            <div class="metric-card"><div class="title">Network Streams</div><div class="value" id="count-net">0</div></div>
-            <div class="metric-card"><div class="title">Unique Hashes</div><div class="value" id="count-hash">0</div></div>
+            <div class="metric-card"><div class="title">Network Events</div><div class="value" id="count-net">0</div></div>
+            <div class="metric-card"><div class="title">Scanned Hashes</div><div class="value" id="count-hash">0</div></div>
             <div class="metric-card"><div class="title">Total Threat Score</div><div class="value danger" id="count-threat">0</div></div>
           </div>
-          <h3>🚨 LATEST CRITICAL ALERTS</h3>
+          <h3>Recent Alerts</h3>
           <div class="scannable-table-wrapper">
             <table>
-              <thead><tr><th>Time</th><th>Target</th><th>Risk Score</th><th>Trigger Flags</th></tr></thead>
+              <thead><tr><th>Time</th><th>Target</th><th>Score</th><th>Flags</th></tr></thead>
               <tbody id="table-alerts"></tbody>
             </table>
           </div>
@@ -65,55 +66,110 @@
 
         <div id="panel-analytics" class="panel">
           <div class="charts-grid">
-            <div class="chart-box"><h4>Top Talker Processes</h4><canvas id="chart-top-procs"></canvas></div>
-            <div class="chart-box"><h4>Global Destinations (Geo)</h4><canvas id="chart-top-geo"></canvas></div>
-            <div class="chart-box"><h4>Network Port Distribution</h4><canvas id="chart-ports"></canvas></div>
-            <div class="chart-box"><h4>Threat Status Breakdown</h4><canvas id="chart-threats"></canvas></div>
-            <div class="chart-box full-width"><h4>Network Activity Timeline</h4><canvas id="chart-timeline"></canvas></div>
+            <div class="chart-box full-width"><h4>Connection Timeline</h4><canvas id="chart-timeline"></canvas></div>
+            <div class="chart-box full-width"><h4>Process Activity (Created vs Ended)</h4><canvas id="chart-process-churn"></canvas></div>
+            <div class="chart-box"><h4>Top Processes</h4><canvas id="chart-top-procs"></canvas></div>
+            <div class="chart-box"><h4>Port Usage</h4><canvas id="chart-ports"></canvas></div>
+            <div class="chart-box"><h4>TCP vs UDP</h4><canvas id="chart-protocol-type"></canvas></div>
+            <div class="chart-box"><h4>IPv4 vs IPv6</h4><canvas id="chart-ip-version"></canvas></div>
           </div>
+        </div>
+
+        <div id="panel-map" class="panel" style="height: calc(100vh - 60px); padding: 0;">
+          <div id="map-canvas-container" style="width: 100%; height: 100%;"></div>
         </div>
 
         <div id="panel-tree" class="panel">
-          <h3>PROCESS EXECUTION CHAIN</h3>
+          <h3>Process Tree</h3>
           <div id="tree-container" class="tree-container"></div>
         </div>
 
+        <div id="panel-network" class="panel">
+            <h3>Network Events</h3>
+            <div class="scannable-table-wrapper">
+              <table>
+                <thead><tr>
+                  <th class="sortable" data-sort="timestamp">Time</th>
+                  <th class="sortable" data-sort="pid">PID</th>
+                  <th class="sortable" data-sort="local">Local</th>
+                  <th class="sortable" data-sort="remote">Remote</th>
+                  <th class="sortable" data-sort="status">State</th>
+                </tr></thead>
+                <tbody id="table-network"></tbody>
+              </table>
+            </div>
+        </div>
+
+        <div id="panel-processes" class="panel">
+            <h3>Processes</h3>
+            <div class="scannable-table-wrapper">
+              <table>
+                <thead><tr>
+                  <th class="sortable" data-sort="timestamp">Time</th>
+                  <th class="sortable" data-sort="pid">PID</th>
+                  <th class="sortable" data-sort="name">Name</th>
+                  <th class="sortable" data-sort="score">Score</th>
+                  <th>Flags</th>
+                </tr></thead>
+                <tbody id="table-processes"></tbody>
+              </table>
+            </div>
+        </div>
+
+        <div id="panel-hashes" class="panel">
+            <h3>File Hashes</h3>
+            <div class="scannable-table-wrapper">
+              <table>
+                <thead><tr>
+                  <th class="sortable" data-sort="timestamp">Time</th>
+                  <th class="sortable" data-sort="name">File</th>
+                  <th>SHA256</th>
+                  <th class="sortable" data-sort="status">Status</th>
+                </tr></thead>
+                <tbody id="table-hashes"></tbody>
+              </table>
+            </div>
+        </div>
+
+        <div id="panel-history" class="panel">
+            <h3>Sessions</h3>
+            <div class="scannable-table-wrapper">
+              <table>
+                <thead><tr><th>Session ID</th><th>Started</th><th>Total Logs</th><th>Threats</th></tr></thead>
+                <tbody id="table-history"></tbody>
+              </table>
+            </div>
+        </div>
+
         <div id="panel-compare" class="panel">
-          <h3>CROSS-SESSION DIFF ENGINE</h3>
+          <h3>Compare Sessions</h3>
           <div class="compare-controls">
-            <select id="comp-a" class="dark-input"><option>Select Baseline Session...</option></select>
-            <select id="comp-b" class="dark-input"><option>Select Target Session...</option></select>
-            <button id="btn-exec-compare" class="btn-primary">GENERATE DIFF</button>
+            <select id="comp-a" class="dark-input"><option>Select Session A...</option></select>
+            <select id="comp-b" class="dark-input"><option>Select Session B...</option></select>
+            <button id="btn-exec-compare" class="btn-primary">Compare</button>
           </div>
           <div class="comparison-matrix">
             <div class="matrix-col">
-              <h4 style="color:var(--accent-alert);">[-] Missing in Target (Only in Baseline)</h4>
+              <h4 style="color:#ffb300;">Only in Session A</h4>
               <ul id="diff-missing" class="diff-list"></ul>
             </div>
             <div class="matrix-col">
-              <h4 style="color:var(--accent-neon);">[+] New in Target (Not in Baseline)</h4>
+              <h4 style="color:#00ffaa;">Only in Session B</h4>
               <ul id="diff-new" class="diff-list"></ul>
             </div>
           </div>
         </div>
-
-        <div id="panel-network" class="panel">
-            <h3>NETWORK STREAMS</h3>
-            <div class="scannable-table-wrapper"><table><thead><tr><th>Time</th><th>PID</th><th>Local</th><th>Remote</th><th>State</th></tr></thead><tbody id="table-network"></tbody></table></div>
-        </div>
-        <div id="panel-processes" class="panel">
-            <h3>PROCESS REGISTRY</h3>
-            <div class="scannable-table-wrapper"><table><thead><tr><th>Time</th><th>PID</th><th>Image</th><th>Risk</th><th>Flags</th></tr></thead><tbody id="table-processes"></tbody></table></div>
-        </div>
-        <div id="panel-hashes" class="panel">
-            <h3>HASH REPUTATION</h3>
-            <div class="scannable-table-wrapper"><table><thead><tr><th>Time</th><th>File</th><th>SHA256</th><th>Status</th></tr></thead><tbody id="table-hashes"></tbody></table></div>
-        </div>
-        <div id="panel-history" class="panel">
-            <h3>SESSION INDEX</h3>
-            <div class="scannable-table-wrapper"><table><thead><tr><th>Session ID</th><th>Time</th><th>Events</th><th>Threats</th></tr></thead><tbody id="table-history"></tbody></table></div>
-        </div>
       </main>
+    </div>
+  </div>
+
+  <div id="json-drawer" class="drawer">
+    <div class="drawer-header">
+      <h3 id="drawer-title">Details</h3>
+      <button id="close-drawer" class="btn-close">×</button>
+    </div>
+    <div class="drawer-content">
+      <pre><code id="drawer-json"></code></pre>
     </div>
   </div>
 

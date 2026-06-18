@@ -31,7 +31,6 @@ func isScanRunning() bool {
 	return isTracking
 }
 
-// startScan safely triggers the process fork sequence execution
 func startScan() bool {
 	scanMu.Lock()
 	defer scanMu.Unlock()
@@ -39,13 +38,12 @@ func startScan() bool {
 		return false
 	}
 
-	// Fork the background daemon process safely out of the current server thread
 	cmd := exec.Command(os.Args[0], "scan")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		fmt.Printf("⚠️  [SERVER ERROR] Failed to fork standalone worker: %v\n", err)
+		fmt.Printf("Error starting scanner: %v\n", err)
 		return false
 	}
 
@@ -58,7 +56,7 @@ func startScan() bool {
 		isTracking = false
 		workerCmd = nil
 		scanMu.Unlock()
-		fmt.Println("📉 [SERVER] External agent telemetry session safely torn down.")
+		fmt.Println("Scanner stopped.")
 	}()
 
 	return true
@@ -79,8 +77,6 @@ func stopScan() bool {
 	workerCmd = nil
 	return true
 }
-
-// ── SOC Log File Parsing Helpers ─────────────────────────────────────────────
 
 type SessionSummary struct {
 	ID           string    `json:"id"`
@@ -178,8 +174,6 @@ func readJSONL(path string) ([]json.RawMessage, error) {
 	return out, s.Err()
 }
 
-// ── HTTP API Handlers ────────────────────────────────────────────────────────
-
 func jsonResp(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -206,7 +200,7 @@ func handleStartScan(w http.ResponseWriter, r *http.Request) {
 	if startScan() {
 		jsonResp(w, 200, map[string]string{"status": "started"})
 	} else {
-		jsonResp(w, 409, map[string]string{"error": "engine session already tracking"})
+		jsonResp(w, 409, map[string]string{"error": "Scanner is already running"})
 	}
 }
 
@@ -218,7 +212,7 @@ func handleStopScan(w http.ResponseWriter, r *http.Request) {
 	if stopScan() {
 		jsonResp(w, 200, map[string]string{"status": "stopped"})
 	} else {
-		jsonResp(w, 409, map[string]string{"error": "no active tracking worker instance"})
+		jsonResp(w, 409, map[string]string{"error": "Scanner is not running"})
 	}
 }
 
@@ -245,7 +239,7 @@ func handleSessionData(w http.ResponseWriter, r *http.Request) {
 	}
 	filename, ok := fileMap[fileKey]
 	if !ok || strings.Contains(sessionID, "..") || strings.Contains(sessionID, "/") {
-		http.Error(w, "malformed query execution route", 400)
+		http.Error(w, "Invalid file requested", 400)
 		return
 	}
 
@@ -266,7 +260,7 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	}
 	filename, ok := fileMap[fileKey]
 	if !ok {
-		http.Error(w, "unknown asset signature", 400)
+		http.Error(w, "Invalid file requested", 400)
 		return
 	}
 
@@ -276,7 +270,6 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Telemetry extraction target point (freshest workspace node folder target)
 	path := filepath.Join("data", sessions[0].ID, filename)
 	rows, err := readJSONL(path)
 	if err != nil {
@@ -286,55 +279,15 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, 200, rows)
 }
 
-func handleUnifiedSearch(w http.ResponseWriter, r *http.Request) {
-	query := strings.ToLower(r.URL.Query().Get("q"))
-	sessionID := r.URL.Query().Get("session")
-
-	targetDir := ""
-	if sessionID != "" {
-		targetDir = filepath.Join("data", sessionID)
-	} else {
-		sessions, _ := listSessions()
-		if len(sessions) > 0 {
-			targetDir = filepath.Join("data", sessions[0].ID)
-		}
-	}
-
-	results := map[string][]json.RawMessage{"network": {}, "processes": {}, "hashes": {}}
-	if targetDir == "" {
-		jsonResp(w, 200, results)
-		return
-	}
-
-	files := map[string]string{
-		"network":   filepath.Join(targetDir, "network.jsonl"),
-		"processes": filepath.Join(targetDir, "processes.jsonl"),
-		"hashes":    filepath.Join(targetDir, "threat_hashes.jsonl"),
-	}
-
-	for key, path := range files {
-		rows, err := readJSONL(path)
-		if err != nil {
-			continue
-		}
-		for _, row := range rows {
-			if strings.Contains(strings.ToLower(string(row)), query) {
-				results[key] = append(results[key], row)
-			}
-		}
-	}
-	jsonResp(w, 200, results)
-}
-
 func StartServer(addr string) {
 	mux := http.NewServeMux()
 
 	var publicFS http.FileSystem
 	if _, err := os.Stat("public"); err == nil {
-		fmt.Println("📁 [SERVER] Sourcing static web assets directly from local workspace disk path.")
+		fmt.Println("Serving UI from local ./public directory")
 		publicFS = http.Dir("public")
 	} else {
-		fmt.Println("📦 [SERVER] Sourcing static web assets from compiled embedded resource cache mapping space.")
+		fmt.Println("Serving UI from embedded resources")
 		strippedEmbed, err := fs.Sub(embeddedPublic, "public")
 		if err != nil {
 			panic(err)
@@ -346,14 +299,13 @@ func StartServer(addr string) {
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/scan/start", handleStartScan)
 	mux.HandleFunc("/api/scan/stop", handleStopScan)
-	mux.HandleFunc("/api/search", handleUnifiedSearch)
 	mux.HandleFunc("/api/live/", handleLive)
 	mux.HandleFunc("/api/sessions", handleSessions)
 	mux.HandleFunc("/api/session/", handleSessionData)
 
-	fmt.Printf("🌐 [SERVER] Portal node active at http://localhost%s\n", addr)
+	fmt.Printf("Dashboard running at http://localhost%s\n", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
-		fmt.Fprintf(os.Stderr, "Fatal operational collapse: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
 		os.Exit(1)
 	}
 }

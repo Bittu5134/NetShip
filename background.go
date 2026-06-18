@@ -71,13 +71,13 @@ type ChildProcessEvent struct {
 }
 
 type GeoCacheData struct {
-	Timestamp   string `json:"timestamp"`
-	IP          string `json:"ip"`
-	PID         int32  `json:"pid"`
-	ProcessGuid string `json:"process_guid"`
-	Country     string `json:"country"`
-	City        string `json:"city"`
-	ISP         string `json:"isp"`
+	Timestamp   string  `json:"timestamp"`
+	IP          string  `json:"ip"`
+	PID         int32   `json:"pid"`
+	ProcessGuid string  `json:"process_guid"`
+	Country     string  `json:"country"`
+	City        string  `json:"city"`
+	ISP         string  `json:"isp"`
 	Latitude    float64 `json:"lat"`
 	Longitude   float64 `json:"lon"`
 }
@@ -160,25 +160,22 @@ func EvaluateThreatVitals(p *process.Process, path, username, name string) (int,
 	lowerPath := strings.ToLower(path)
 	lowerName := strings.ToLower(name)
 
-	// Vector 1: Static Shell & Script Execution Engines
 	if strings.Contains(lowerName, "powershell") || strings.Contains(lowerName, "cmd.exe") || strings.Contains(lowerName, "wscript") || strings.Contains(lowerName, "mshta") {
-		flags = append(flags, "SUSPICIOUS_SHELL_ENGINE_EXECUTION")
+		flags = append(flags, "Shell Execution")
 		score += 25
 	}
 
-	// Vector 2: Path Location Exploitations
 	if strings.Contains(lowerPath, "\\appdata\\local\\temp") || strings.Contains(lowerPath, "\\windows\\temp") {
-		flags = append(flags, "EXEC_FROM_TEMP_PATH")
+		flags = append(flags, "Executed from Temp")
 		score += 20
 	}
 	if strings.Contains(lowerPath, "\\users\\") && strings.Contains(lowerPath, "\\downloads\\") {
-		flags = append(flags, "EXEC_FROM_DOWNLOADS_FOLDER")
+		flags = append(flags, "Executed from Downloads")
 		score += 15
 	}
 
-	// Vector 3: Volumetric Network Sockets Check
 	if conns, err := p.Connections(); err == nil && len(conns) > 15 {
-		flags = append(flags, "EXCESSIVE_OUTBOUND_NETWORK_BURST")
+		flags = append(flags, "High Network Volume")
 		score += 20
 	}
 
@@ -232,10 +229,10 @@ func AuditFileHash(procGuid string, filePath string) {
 			memRegistryLock.Lock()
 			if procData, exists := activeProcessMemRegistry[procGuid]; exists {
 				procData.ThreatScore = 100
-				procData.ThreatFlags = append(procData.ThreatFlags, "MALICIOUS_HASH_REPUTATION_MATCH")
+				procData.ThreatFlags = append(procData.ThreatFlags, "Known Malware Hash")
 				WriteEvent(ProcessLog, UnifiedLogEvent{
 					Timestamp: time.Now().Format(time.RFC3339),
-					Action:    "THREAT_ALERT",
+					Action:    "ALERT",
 					Process:   procData,
 				})
 			}
@@ -260,7 +257,7 @@ func AuditChildProcesses(parentPid int32, parentGuid string) {
 		childName, _ := child.Name()
 		cTime, _ := child.CreateTime()
 		if childName == "" {
-			childName = "Transient Process"
+			childName = "Unknown Process"
 		}
 		childGuid := GenerateProcessGuid(childPid, cTime)
 		relationshipKey := fmt.Sprintf("%s->%s", parentGuid, childGuid)
@@ -357,8 +354,8 @@ func LazyRegisterProcess(pid int32) string {
 
 	p, err := process.NewProcess(pid)
 	if err != nil {
-		processGuidRegistry[pid] = "SYSTEM-ACCESS-DENIED-TOKEN"
-		return "SYSTEM-ACCESS-DENIED-TOKEN"
+		processGuidRegistry[pid] = "SYSTEM-PROCESS"
+		return "SYSTEM-PROCESS"
 	}
 
 	name, _ := p.Name()
@@ -383,7 +380,7 @@ func LazyRegisterProcess(pid int32) string {
 		memRegistryLock.Unlock()
 
 		WriteEvent(ProcessLog, UnifiedLogEvent{
-			Timestamp: time.Now().Format(time.RFC3339), Action: "PROC_START", Process: &procData,
+			Timestamp: time.Now().Format(time.RFC3339), Action: "START", Process: &procData,
 		})
 		AuditFileHash(guid, path)
 	}()
@@ -445,11 +442,23 @@ func StartBackgroundService() {
 					WriteEvent(NetworkLog, UnifiedLogEvent{Timestamp: time.Now().Format(time.RFC3339), Action: "CLOSED", Connection: &trackedState})
 				}
 				pidReferenceCounter[trackedState.PID]--
+				
+				// PROCESS DELETION LOGGING PATCH
 				if pidReferenceCounter[trackedState.PID] <= 0 {
 					delete(processGuidRegistry, trackedState.PID)
 					delete(pidReferenceCounter, trackedState.PID)
+					
 					memRegistryLock.Lock()
-					delete(activeProcessMemRegistry, trackedState.ProcessGuid)
+					if procData, exists := activeProcessMemRegistry[trackedState.ProcessGuid]; exists {
+						if !isInitialRun {
+							WriteEvent(ProcessLog, UnifiedLogEvent{
+								Timestamp: time.Now().Format(time.RFC3339), 
+								Action: "STOP", 
+								Process: procData,
+							})
+						}
+						delete(activeProcessMemRegistry, trackedState.ProcessGuid)
+					}
 					memRegistryLock.Unlock()
 				}
 				delete(socketStateCache, trackedKey)

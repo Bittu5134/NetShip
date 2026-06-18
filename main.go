@@ -6,12 +6,6 @@ import (
 )
 
 func main() {
-	// NetShip Execution Matrix Routing:
-	//   ./netship           → starts the dashboard server on default :8080
-	//   ./netship scan      → runs the background scanner directly as a standalone worker
-	//   ./netship server    → explicit server mode
-	//   ./netship :9000     → server routing on a custom port destination
-
 	arg := ""
 	if len(os.Args) > 1 {
 		arg = os.Args[1]
@@ -19,7 +13,7 @@ func main() {
 
 	switch arg {
 	case "scan":
-		fmt.Println("🚀 [ENGINE] Launching decoupled telemetry scanner agent...")
+		fmt.Println("Starting NetShip background scanner...")
 		StartBackgroundService()
 	case "", "server":
 		StartServer(":8080")
