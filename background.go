@@ -6,6 +6,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"math"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -13,18 +15,24 @@ import (
 	"sync"
 	"time"
 
-	"github.com/shirou/gopsutil/v4/net"
+	psnet "github.com/shirou/gopsutil/v4/net"
 	"github.com/shirou/gopsutil/v4/process"
 )
 
 var (
-	SessionDataDir  string
-	NetworkLog      = "network.jsonl"
-	ProcessLog      = "processes.jsonl"
-	ChildLog        = "children.jsonl"
-	GeoLog          = "geolocation.jsonl"
-	HashLog         = "threat_hashes.jsonl"
-	MaliciousDbFile = "malicious_hashes.txt"
+	SessionDataDir   string
+	NetworkLog       = "network.jsonl"
+	ProcessLog       = "processes.jsonl"
+	ChildLog         = "children.jsonl"
+	GeoLog           = "geolocation.jsonl"
+	HashLog          = "threat_hashes.jsonl"
+	
+	// Resources directory consolidation
+	ResourcesDir     = "resources"
+	MaliciousDbFile  = filepath.Join(ResourcesDir, "malicious_hashes.txt")
+	DataCenterDbFile = filepath.Join(ResourcesDir, "datacenters.json")
+	IPv4RangesFile   = filepath.Join(ResourcesDir, "ipv4_merged.txt")
+	IPv6RangesFile   = filepath.Join(ResourcesDir, "ipv6_merged.txt")
 )
 
 type LeanConnectionMeta struct {
@@ -90,6 +98,14 @@ type HashAuditData struct {
 	Status      string `json:"status"`
 }
 
+type DataCenterRecord struct {
+	Name       string    `json:"name"`
+	Company    string    `json:"company"`
+	City       string    `json:"city"`
+	Country    string    `json:"country"`
+	CityCoords []float64 `json:"city_coords"`
+}
+
 var socketStateCache = make(map[string]LeanConnectionMeta)
 var processGuidRegistry = make(map[int32]string)
 var pidReferenceCounter = make(map[int32]int)
@@ -101,6 +117,13 @@ var geoCacheLock sync.RWMutex
 
 var maliciousBlacklist = make(map[string]bool)
 var blacklistLock sync.RWMutex
+
+var dataCenterCatalog []DataCenterRecord
+var dataCenterLock sync.RWMutex
+
+// Parsed networks list for rapid CIDR match lookup
+var cloudIPNetworks []net.IPNet
+var networkListLock sync.RWMutex
 
 var loggedHashes = make(map[string]bool)
 var hashCacheLock sync.Mutex
@@ -133,25 +156,91 @@ func WriteEvent(filename string, event any) {
 	_ = json.NewEncoder(file).Encode(event)
 }
 
-func DownloadMaliciousDatabase(dbPath string) error {
-	if _, err := os.Stat(dbPath); err == nil {
+func DownloadFileAsset(targetPath string, url string) error {
+	if _, err := os.Stat(targetPath); err == nil {
 		return nil
 	}
-	url := "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/refs/heads/main/full-hash-sha256-aa.txt"
-	client := &http.Client{Timeout: 15 * time.Second}
+	
+	// Create parent directories if missing
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
+		return err
+	}
+
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
 	}
 	defer resp.Body.Close()
 
-	out, err := os.OpenFile(dbPath, os.O_CREATE|os.O_WRONLY, 0644)
+	out, err := os.OpenFile(targetPath, os.O_CREATE|os.O_WRONLY, 0644)
 	if err != nil {
 		return err
 	}
 	defer out.Close()
 	_, err = io.Copy(out, resp.Body)
 	return err
+}
+
+func LoadNetworkRanges(path string) {
+	file, err := os.Open(path)
+	if err != nil {
+		return
+	}
+	defer file.Close()
+
+	scanner := bufio.NewScanner(file)
+	networkListLock.Lock()
+	for scanner.Scan() {
+		cidr := strings.TrimSpace(scanner.Text())
+		if cidr == "" || strings.HasPrefix(cidr, "#") {
+			continue
+		}
+		if _, ipnet, err := net.ParseCIDR(cidr); err == nil && ipnet != nil {
+			cloudIPNetworks = append(cloudIPNetworks, *ipnet)
+		}
+	}
+	networkListLock.Unlock()
+}
+
+func CheckIPAgainstCloudRanges(ipStr string) bool {
+	parsedIP := net.ParseIP(ipStr)
+	if parsedIP == nil {
+		return false
+	}
+
+	networkListLock.RLock()
+	defer networkListLock.RUnlock()
+
+	for _, ipnet := range cloudIPNetworks {
+		if ipnet.Contains(parsedIP) {
+			return true
+		}
+	}
+	return false
+}
+
+func IsNearDataCenter(lat, lon float64, city, country string) (bool, string) {
+	dataCenterLock.RLock()
+	defer dataCenterLock.RUnlock()
+
+	cleanCity := strings.ToLower(strings.TrimSpace(city))
+	cleanCountry := strings.ToLower(strings.TrimSpace(country))
+
+	for _, dc := range dataCenterCatalog {
+		if cleanCity != "" && strings.ToLower(dc.City) == cleanCity && cleanCountry != "" && strings.ToLower(dc.Country) == cleanCountry {
+			return true, fmt.Sprintf("%s (%s)", dc.Name, dc.Company)
+		}
+		if len(dc.CityCoords) == 2 && lat != 0 && lon != 0 {
+			dcLat := dc.CityCoords[0]
+			dcLon := dc.CityCoords[1]
+			distance := math.Sqrt(math.Pow(lat-dcLat, 2) + math.Pow(lon-dcLon, 2))
+			if distance < 0.3 { 
+				return true, fmt.Sprintf("%s (%s)", dc.Name, dc.Company)
+			}
+		}
+	}
+	return false, ""
 }
 
 func EvaluateThreatVitals(p *process.Process, path, username, name string) (int, []string) {
@@ -179,9 +268,6 @@ func EvaluateThreatVitals(p *process.Process, path, username, name string) (int,
 		score += 20
 	}
 
-	if score > 100 {
-		score = 100
-	}
 	return score, flags
 }
 
@@ -325,11 +411,42 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 			geoCache[normalizedIP] = geoData
 			geoCacheLock.Unlock()
 			WriteEvent(GeoLog, geoData)
+
+			// Evaluation Vector: Determine if target IP is outside cloud networks (Home/Residential Network target)
+			isDataCenterNetwork := CheckIPAgainstCloudRanges(normalizedIP)
+			
+			memRegistryLock.Lock()
+			if procData, exists := activeProcessMemRegistry[guid]; exists {
+				if !isDataCenterNetwork {
+					// Anomaly: Target falls outside verified datacenter blocks -> Home Network/Residential IP
+					procData.ThreatScore += 15
+					if procData.ThreatScore > 100 {
+						procData.ThreatScore = 100
+					}
+
+					hasFlag := false
+					for _, f := range procData.ThreatFlags {
+						if f == "Residential/Home Network Target" {
+							hasFlag = true
+							break
+						}
+					}
+					if !hasFlag {
+						procData.ThreatFlags = append(procData.ThreatFlags, "Residential/Home Network Target")
+						WriteEvent(ProcessLog, UnifiedLogEvent{
+							Timestamp: time.Now().Format(time.RFC3339),
+							Action:    "ALERT",
+							Process:   procData,
+						})
+					}
+				}
+			}
+			memRegistryLock.Unlock()
 		}
 	}()
 }
 
-func AnalyzeSocket(conn net.ConnectionStat, guid string) LeanConnectionMeta {
+func AnalyzeSocket(conn psnet.ConnectionStat, guid string) LeanConnectionMeta {
 	meta := LeanConnectionMeta{
 		ProcessGuid: guid, PID: conn.Pid, LocalIP: conn.Laddr.IP, LocalPort: conn.Laddr.Port,
 		RemoteIP: conn.Raddr.IP, RemotePort: conn.Raddr.Port, Status: conn.Status,
@@ -392,7 +509,8 @@ func StartBackgroundService() {
 	if name, err := os.Hostname(); err == nil { sysHostname = name }
 	SessionDataDir = filepath.Join("data", time.Now().Format("20060102_150405"))
 
-	_ = DownloadMaliciousDatabase(MaliciousDbFile)
+	// 1. Download and parse hash list
+	_ = DownloadFileAsset(MaliciousDbFile, "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/refs/heads/main/full-hash-sha256-aa.txt")
 	if dbFile, err := os.Open(MaliciousDbFile); err == nil {
 		scanner := bufio.NewScanner(dbFile)
 		blacklistLock.Lock()
@@ -406,8 +524,26 @@ func StartBackgroundService() {
 		dbFile.Close()
 	}
 
+	// 2. Download data centers database mapping
+	_ = DownloadFileAsset(DataCenterDbFile, "https://raw.githubusercontent.com/Ringmast4r/Global-Data-Center-Map/refs/heads/main/datacenters.json")
+	if dcFile, err := os.Open(DataCenterDbFile); err == nil {
+		var records []DataCenterRecord
+		if err := json.NewDecoder(dcFile).Decode(&records); err == nil {
+			dataCenterLock.Lock()
+			dataCenterCatalog = records
+			dataCenterLock.Unlock()
+		}
+		dcFile.Close()
+	}
+
+	// 3. Download and compile the All-In-One Cloud/Infrastructure CIDR lists
+	_ = DownloadFileAsset(IPv4RangesFile, "https://raw.githubusercontent.com/lord-alfred/ipranges/main/all/ipv4_merged.txt")
+	_ = DownloadFileAsset(IPv6RangesFile, "https://raw.githubusercontent.com/lord-alfred/ipranges/main/all/ipv6_merged.txt")
+	LoadNetworkRanges(IPv4RangesFile)
+	LoadNetworkRanges(IPv6RangesFile)
+
 	for {
-		connections, err := net.Connections("all")
+		connections, err := psnet.Connections("all")
 		if err != nil {
 			time.Sleep(2 * time.Second)
 			continue
@@ -443,7 +579,6 @@ func StartBackgroundService() {
 				}
 				pidReferenceCounter[trackedState.PID]--
 				
-				// PROCESS DELETION LOGGING PATCH
 				if pidReferenceCounter[trackedState.PID] <= 0 {
 					delete(processGuidRegistry, trackedState.PID)
 					delete(pidReferenceCounter, trackedState.PID)
@@ -453,8 +588,8 @@ func StartBackgroundService() {
 						if !isInitialRun {
 							WriteEvent(ProcessLog, UnifiedLogEvent{
 								Timestamp: time.Now().Format(time.RFC3339), 
-								Action: "STOP", 
-								Process: procData,
+								Action:    "STOP", 
+								Process:   procData,
 							})
 						}
 						delete(activeProcessMemRegistry, trackedState.ProcessGuid)

@@ -1,4 +1,4 @@
-// Master State
+// Master State Registry
 let state = {
   mode: "offline",
   sessionId: null,
@@ -9,6 +9,9 @@ let state = {
 
 let mapInstance = null;
 let mapLayer = null;
+let cachedDataCenters = [];
+let dynamicPathLines = [];
+let dynamicPathLabels = [];
 
 async function init() {
   setupNav();
@@ -27,14 +30,14 @@ async function updateState() {
     state.mode = "live";
     state.sessionId = statusResp.session_dir;
     banner.className = "status-banner live";
-    banner.innerText = `LIVE: ${state.sessionId}`;
+    banner.innerText = `LIVE SCAN: ${state.sessionId}`;
   } else if (state.mode !== "history") {
     state.mode = "offline";
     banner.className = "status-banner offline";
     banner.innerText = "SYSTEM IDLE";
   } else {
     banner.className = "status-banner history";
-    banner.innerText = `HISTORY: ${state.sessionId}`;
+    banner.innerText = `HISTORY LOG: ${state.sessionId}`;
   }
 
   if (state.mode !== "offline") await fetchTelemetry();
@@ -75,7 +78,6 @@ document.getElementById("global-search").addEventListener("input", () => {
   if (state.mode !== "offline") fetchTelemetry();
 });
 
-// --- Renders ---
 function renderAllDashboards(data) {
   renderOverview(data);
   renderTables(data);
@@ -86,7 +88,6 @@ function renderAllDashboards(data) {
 }
 
 function renderOverview(data) {
-  // Count only active processes by looking for STARTs without STOPs (or just count total logs as before)
   document.getElementById("count-proc").innerText = data.processes.filter(p => p.action === "START" || p.action === "PROC_START").length;
   document.getElementById("count-net").innerText = data.network.length;
   document.getElementById("count-hash").innerText = data.hashes.length;
@@ -112,10 +113,9 @@ function renderOverview(data) {
       <td>${(p.process.threat_flags || []).join(", ")}</td>
     </tr>`;
   }).join("");
-  document.getElementById("table-alerts").innerHTML = alertsHtml || "<tr><td colspan='4'>No alerts.</td></tr>";
+  document.getElementById("table-alerts").innerHTML = alertsHtml || "<tr><td colspan='4'>No active alerts.</td></tr>";
 }
 
-// --- Sorting Helpers ---
 function setupSorting() {
   document.querySelectorAll('th.sortable').forEach(th => {
     th.addEventListener('click', () => {
@@ -129,7 +129,6 @@ function setupSorting() {
       
       document.querySelectorAll('th.sortable').forEach(el => el.classList.remove('sort-asc', 'sort-desc'));
       th.classList.add(state.sort.dir === 'asc' ? 'sort-asc' : 'sort-desc');
-      
       renderTables(state.data);
     });
   });
@@ -192,7 +191,6 @@ function renderTables(data) {
   }).join("");
 }
 
-// --- JSON Drawer ---
 function openDrawer(title, rawData) {
   document.getElementById("drawer-title").innerText = title;
   document.getElementById("drawer-json").innerText = JSON.stringify(rawData, null, 2);
@@ -203,7 +201,6 @@ document.getElementById("close-drawer").addEventListener("click", () => {
   document.getElementById("json-drawer").classList.remove("open");
 });
 
-// --- Graphic Timeline & Analytics Charts ---
 function renderCharts(data) {
   if (typeof Chart === "undefined") return;
 
@@ -217,21 +214,19 @@ function renderCharts(data) {
     });
   };
 
-  // 1. Connection Timeline (Line)
   let netTimeBuckets = {};
   data.network.forEach(n => {
     if (!n.timestamp) return;
-    const time = n.timestamp.split("T")[1]?.substring(0, 8); // HH:MM:SS
+    const time = n.timestamp.split("T")[1]?.substring(0, 8);
     if(time) netTimeBuckets[time] = (netTimeBuckets[time] || 0) + 1;
   });
   const netLabels = Object.keys(netTimeBuckets).sort().slice(-40); 
   makeChart('chart-timeline', 'line', netLabels, netLabels.map(l=>netTimeBuckets[l]), 'rgba(88, 166, 255, 0.1)', 'Network Events');
 
-  // 2. Process Activity Churn (Multi-Dataset Line Chart)
   let procTimeBuckets = {};
   data.processes.forEach(p => {
     if (!p.timestamp) return;
-    const time = p.timestamp.split("T")[1]?.substring(0, 8); // HH:MM:SS
+    const time = p.timestamp.split("T")[1]?.substring(0, 8);
     if (!time) return;
     if (!procTimeBuckets[time]) procTimeBuckets[time] = { start: 0, stop: 0 };
     if (p.action === "START" || p.action === "PROC_START") procTimeBuckets[time].start++;
@@ -245,70 +240,135 @@ function renderCharts(data) {
     data: {
       labels: procLabels,
       datasets: [
-        { label: 'Processes Created', data: procLabels.map(l => procTimeBuckets[l].start), borderColor: '#2ea043', backgroundColor: 'rgba(46, 160, 67, 0.1)', fill: true, tension: 0.2 },
-        { label: 'Processes Ended', data: procLabels.map(l => procTimeBuckets[l].stop), borderColor: '#f85149', backgroundColor: 'rgba(248, 81, 73, 0.1)', fill: true, tension: 0.2 }
+        { label: 'Created', data: procLabels.map(l => procTimeBuckets[l].start), borderColor: '#2ea043', backgroundColor: 'rgba(46, 160, 67, 0.1)', fill: true, tension: 0.2 },
+        { label: 'Ended', data: procLabels.map(l => procTimeBuckets[l].stop), borderColor: '#f85149', backgroundColor: 'rgba(248, 81, 73, 0.1)', fill: true, tension: 0.2 }
       ]
     },
-    options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: '#8b949e' } }, y: { ticks: { color: '#8b949e' }, beginAtZero: true, suggestedMax: 5 } }, plugins: { legend: { labels: { color: '#c9d1d9' } } } }
+    options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: '#8b949e' } }, y: { ticks: { color: '#8b949e' }, beginAtZero: true } }, plugins: { legend: { labels: { color: '#c9d1d9' } } } }
   });
 
-  // 3. Top Processes (Bar)
   let procCount = {};
   data.processes.forEach(p => { if(p.process) procCount[p.process.name] = (procCount[p.process.name]||0) + 1; });
   let sortProc = Object.entries(procCount).sort((a,b)=>b[1]-a[1]).slice(0, 6);
   makeChart('chart-top-procs', 'bar', sortProc.map(k=>k[0]), sortProc.map(k=>k[1]), '#58a6ff', 'Executions');
 
-  // 4. Port Usage (Doughnut)
   let portCount = {};
   data.network.forEach(n => { if(n.connection && n.connection.remote_port) portCount[n.connection.remote_port] = (portCount[n.connection.remote_port]||0) + 1; });
   let sortPort = Object.entries(portCount).sort((a,b)=>b[1]-a[1]).slice(0, 6);
   makeChart('chart-ports', 'doughnut', sortPort.map(k=>k[0]), sortPort.map(k=>k[1]), ['#58a6ff', '#2ea043', '#d29922', '#f85149', '#a371f7', '#8b949e'], 'Connections');
 
-  // 5. TCP vs UDP (Doughnut)
   let protoCount = { TCP: 0, UDP: 0 };
   data.network.forEach(n => { if(n.connection && n.connection.protocol_type) protoCount[n.connection.protocol_type]++; });
   makeChart('chart-protocol-type', 'doughnut', Object.keys(protoCount), Object.values(protoCount), ['#58a6ff', '#a371f7'], 'Protocol');
 
-  // 6. IPv4 vs IPv6 (Doughnut)
   let ipCount = { IPv4: 0, IPv6: 0 };
   data.network.forEach(n => { if(n.connection && n.connection.ip_version) ipCount[n.connection.ip_version]++; });
   makeChart('chart-ip-version', 'doughnut', Object.keys(ipCount), Object.values(ipCount), ['#2ea043', '#d29922'], 'IP Version');
 }
 
-// --- Geographic Map (Leaflet) ---
-function renderMap(geoData) {
+// --- Geographic Map Engine (No Central Home Node, Zoom Adaptive Links) ---
+async function renderMap(geoData) {
   if (typeof L === "undefined") return;
+
   if (!mapInstance) {
-    mapInstance = L.map('map-canvas-container').setView([20.5937, 78.9629], 3);
+    mapInstance = L.map('map-canvas-container').setView([21.1458, 79.0882], 3);
     L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
       attribution: '&copy; OpenStreetMap &copy; CARTO'
     }).addTo(mapInstance);
     mapLayer = L.layerGroup().addTo(mapInstance);
+
+    // Zoom Event Supervisor: Hides/Shows link context on map adjustments
+    mapInstance.on('zoomend', () => {
+      const showDetails = mapInstance.getZoom() >= 6;
+      dynamicPathLines.forEach(l => l.setStyle({ opacity: showDetails ? 0.85 : 0 }));
+      dynamicPathLabels.forEach(lbl => lbl.setOpacity(showDetails ? 0.95 : 0));
+    });
   }
 
   setTimeout(() => mapInstance.invalidateSize(), 100);
   mapLayer.clearLayers();
+  dynamicPathLines = [];
+  dynamicPathLabels = [];
 
-  const homeLat = 20.5937; 
-  const homeLon = 78.9629;
-  
-  L.circleMarker([homeLat, homeLon], { radius: 8, fillColor: "#2ea043", color: "#fff", weight: 2, fillOpacity: 1 }).addTo(mapLayer).bindPopup("Local Agent");
+  if (cachedDataCenters.length === 0) {
+    cachedDataCenters = await fetch('/datacenters.json').then(r => r.json()).catch(() => []);
+  }
 
+  function getHaversineDistance(lat1, lon1, lat2, lon2) {
+    const R = 6371; 
+    const dLat = (lat2 - lat1) * Math.PI / 180;
+    const dLon = (lon2 - lon1) * Math.PI / 180;
+    const a = Math.sin(dLat/2)*Math.sin(dLat/2) + Math.cos(lat1*Math.PI/180)*Math.cos(lat2*Math.PI/180)*Math.sin(dLon/2)*Math.sin(dLon/2);
+    return R * (2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a)));
+  }
+
+  // 1. Render Fixed Datacenters (Faded background marker style)
+  cachedDataCenters.forEach(dc => {
+    if (!dc.city_coords || dc.city_coords.length !== 2) return;
+    L.circleMarker([dc.city_coords[0], dc.city_coords[1]], {
+      radius: 2,
+      fillColor: "#ffaa00",
+      color: "transparent",
+      fillOpacity: 0.08, // Faded into the background at high altitude
+      interactive: true
+    }).addTo(mapLayer).bindPopup(`<strong>Data Center Profile</strong><br>${dc.name}<br>${dc.company}`);
+  });
+
+  // 2. Plot live Network Events & Map Closest Proximity Links
   geoData.forEach(loc => {
     if (!loc.lat || !loc.lon) return;
 
-    const marker = L.circleMarker([loc.lat, loc.lon], { radius: 5, fillColor: "#58a6ff", color: "#fff", weight: 1, fillOpacity: 0.8 });
-    marker.bindPopup(`<strong>${loc.ip}</strong><br>${loc.city}, ${loc.country}<br>${loc.isp}`);
-    mapLayer.addLayer(marker);
-
-    const line = L.polyline([[homeLat, homeLon], [loc.lat, loc.lon]], {
-        color: '#58a6ff', weight: 1, opacity: 0.3, dashArray: '4'
+    const trafficMarker = L.circleMarker([loc.lat, loc.lon], {
+      radius: 6,
+      fillColor: "#58a6ff", // Bright blue traffic dots
+      color: "#ffffff",
+      weight: 1.5,
+      fillOpacity: 0.95
     });
-    mapLayer.addLayer(line);
+    trafficMarker.bindPopup(`<strong>IP Target: ${loc.ip}</strong><br>${loc.city}, ${loc.country}<br>Carrier: ${loc.isp}`);
+    mapLayer.addLayer(trafficMarker);
+
+    let closestDc = null;
+    let shortestDistance = Infinity;
+
+    cachedDataCenters.forEach(dc => {
+      if (!dc.city_coords || dc.city_coords.length !== 2) return;
+      const d = getHaversineDistance(loc.lat, loc.lon, dc.city_coords[0], dc.city_coords[1]);
+      if (d < shortestDistance) {
+        shortestDistance = d;
+        closestDc = dc;
+      }
+    });
+
+    // 3. Mount Vector Links (Hidden by default, triggered on tight zoom zoom level)
+    if (closestDc) {
+      const dcLat = closestDc.city_coords[0];
+      const dcLon = closestDc.city_coords[1];
+      const isVisible = mapInstance.getZoom() >= 6;
+
+      const trafficLine = L.polyline([[loc.lat, loc.lon], [dcLat, dcLon]], {
+        color: '#ffaa00', // Clear solid contrast line
+        weight: 2,
+        opacity: isVisible ? 0.85 : 0,
+        dashArray: '2, 5'
+      });
+      mapLayer.addLayer(trafficLine);
+      dynamicPathLines.push(trafficLine);
+
+      const labelText = `${closestDc.company} (~${Math.round(shortestDistance)} km)`;
+      const label = L.marker([(loc.lat + dcLat)/2, (loc.lon + dcLon)/2], {
+        opacity: isVisible ? 0.95 : 0,
+        icon: L.divIcon({
+          className: 'map-path-label',
+          html: `<div style="color: #fff; background: #161b22; border: 1px solid rgba(255,255,255,0.2); padding: 3px 6px; border-radius: 4px; font-family: monospace; font-size: 10px; font-weight: bold; white-space: nowrap; box-shadow: 0 2px 6px rgba(0,0,0,0.5); pointer-events: none;">🏢 ${labelText}</div>`
+        })
+      });
+      mapLayer.addLayer(label);
+      dynamicPathLabels.push(label);
+    }
   });
 }
 
-// --- Process Tree ---
 function renderProcessTree(data) {
   const container = document.getElementById("tree-container");
   if(data.children.length === 0) { container.innerHTML = "No relationships mapped yet."; return; }
@@ -329,7 +389,6 @@ function renderProcessTree(data) {
   container.innerHTML = html;
 }
 
-// --- History & Compare ---
 async function populateHistory() {
   const sessions = await fetch("/api/sessions").then(r => r.json()).catch(()=>[]);
   
@@ -341,8 +400,8 @@ async function populateHistory() {
   `).join("");
 
   const opts = sessions.map(s => `<option value="${s.id}">${s.id}</option>`).join("");
-  document.getElementById("comp-a").innerHTML = opts || "<option>No sessions</option>";
-  document.getElementById("comp-b").innerHTML = opts || "<option>No sessions</option>";
+  document.getElementById("comp-a").innerHTML = opts || "<option>No sessions found</option>";
+  document.getElementById("comp-b").innerHTML = opts || "<option>No sessions found</option>";
 }
 
 document.getElementById("btn-exec-compare").addEventListener("click", async () => {
@@ -362,9 +421,9 @@ document.getElementById("btn-exec-compare").addEventListener("click", async () =
     const missing = [...namesA].filter(x => !namesB.has(x));
     const added = [...namesB].filter(x => !namesA.has(x));
 
-    document.getElementById("diff-missing").innerHTML = missing.length ? missing.map(n => `<li>${n}</li>`).join("") : "<li>None</li>";
-    document.getElementById("diff-new").innerHTML = added.length ? added.map(n => `<li>${n}</li>`).join("") : "<li>None</li>";
-  } catch(e) { console.error("Compare failed", e); }
+    document.getElementById("diff-missing").innerHTML = missing.length ? missing.map(n => `<li>${n}</li>`).join("") : "<li>No differences detected</li>";
+    document.getElementById("diff-new").innerHTML = added.length ? added.map(n => `<li>${n}</li>`).join("") : "<li>No differences detected</li>";
+  } catch(e) { console.error("Comparison analysis error", e); }
 });
 
 function setupNav() {

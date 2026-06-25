@@ -31,6 +31,7 @@ func isScanRunning() bool {
 	return isTracking
 }
 
+// startScan spawns the background worker binary as an independent operating system process
 func startScan() bool {
 	scanMu.Lock()
 	defer scanMu.Unlock()
@@ -43,7 +44,7 @@ func startScan() bool {
 	cmd.Stderr = os.Stderr
 
 	if err := cmd.Start(); err != nil {
-		fmt.Printf("Error starting scanner: %v\n", err)
+		fmt.Printf("Error starting background scanner: %v\n", err)
 		return false
 	}
 
@@ -56,12 +57,13 @@ func startScan() bool {
 		isTracking = false
 		workerCmd = nil
 		scanMu.Unlock()
-		fmt.Println("Scanner stopped.")
+		fmt.Println("Background scanner process has terminated.")
 	}()
 
 	return true
 }
 
+// stopScan safely kills the independent background tracking process
 func stopScan() bool {
 	scanMu.Lock()
 	defer scanMu.Unlock()
@@ -77,6 +79,8 @@ func stopScan() bool {
 	workerCmd = nil
 	return true
 }
+
+// ── Log File Parsers ─────────────────────────────────────────────────────────
 
 type SessionSummary struct {
 	ID           string    `json:"id"`
@@ -174,6 +178,8 @@ func readJSONL(path string) ([]json.RawMessage, error) {
 	return out, s.Err()
 }
 
+// ── HTTP API Handlers ────────────────────────────────────────────────────────
+
 func jsonResp(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
@@ -194,7 +200,7 @@ func handleStatus(w http.ResponseWriter, r *http.Request) {
 
 func handleStartScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", 405)
+		http.Error(w, "POST endpoints only", 405)
 		return
 	}
 	if startScan() {
@@ -206,7 +212,7 @@ func handleStartScan(w http.ResponseWriter, r *http.Request) {
 
 func handleStopScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST only", 405)
+		http.Error(w, "POST endpoints only", 405)
 		return
 	}
 	if stopScan() {
@@ -228,7 +234,7 @@ func handleSessions(w http.ResponseWriter, r *http.Request) {
 func handleSessionData(w http.ResponseWriter, r *http.Request) {
 	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/session/"), "/")
 	if len(parts) != 2 {
-		http.Error(w, "bad path", 400)
+		http.Error(w, "bad request path", 400)
 		return
 	}
 	sessionID, fileKey := parts[0], parts[1]
@@ -239,7 +245,7 @@ func handleSessionData(w http.ResponseWriter, r *http.Request) {
 	}
 	filename, ok := fileMap[fileKey]
 	if !ok || strings.Contains(sessionID, "..") || strings.Contains(sessionID, "/") {
-		http.Error(w, "Invalid file requested", 400)
+		http.Error(w, "Invalid data file requested", 400)
 		return
 	}
 
@@ -260,7 +266,7 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	}
 	filename, ok := fileMap[fileKey]
 	if !ok {
-		http.Error(w, "Invalid file requested", 400)
+		http.Error(w, "Invalid live channel requested", 400)
 		return
 	}
 
@@ -279,15 +285,17 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, 200, rows)
 }
 
+// ── Server Entry Point ───────────────────────────────────────────────────────
+
 func StartServer(addr string) {
 	mux := http.NewServeMux()
 
 	var publicFS http.FileSystem
 	if _, err := os.Stat("public"); err == nil {
-		fmt.Println("Serving UI from local ./public directory")
+		fmt.Println("Serving user interface from local ./public directory")
 		publicFS = http.Dir("public")
 	} else {
-		fmt.Println("Serving UI from embedded resources")
+		fmt.Println("Serving user interface from binary embedded assets")
 		strippedEmbed, err := fs.Sub(embeddedPublic, "public")
 		if err != nil {
 			panic(err)
@@ -295,7 +303,21 @@ func StartServer(addr string) {
 		publicFS = http.FS(strippedEmbed)
 	}
 
+	// Serve static front-end workspace portal assets
 	mux.Handle("/", http.FileServer(publicFS))
+
+	// Data Center File Exposer Route Endpoint
+	mux.HandleFunc("/datacenters.json", func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		data, err := os.ReadFile(filepath.Join("resources", "datacenters.json"))
+		if err != nil {
+			w.Write([]byte("[]"))
+			return
+		}
+		w.Write(data)
+	})
+
+	// Control Plane endpoints
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/scan/start", handleStartScan)
 	mux.HandleFunc("/api/scan/stop", handleStopScan)
@@ -303,9 +325,9 @@ func StartServer(addr string) {
 	mux.HandleFunc("/api/sessions", handleSessions)
 	mux.HandleFunc("/api/session/", handleSessionData)
 
-	fmt.Printf("Dashboard running at http://localhost%s\n", addr)
+	fmt.Printf("Dashboard portal operational at http://localhost%s\n", addr)
 	if err := http.ListenAndServe(addr, mux); err != nil {
-		fmt.Fprintf(os.Stderr, "Server error: %v\n", err)
+		fmt.Fprintf(os.Stderr, "Server failure: %v\n", err)
 		os.Exit(1)
 	}
 }
