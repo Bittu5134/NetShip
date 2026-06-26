@@ -27,7 +27,7 @@ var (
 	GeoLog           = "geolocation.jsonl"
 	HashLog          = "threat_hashes.jsonl"
 	
-	// Resources directory consolidation
+	// Resources paths
 	ResourcesDir     = "resources"
 	MaliciousDbFile  = filepath.Join(ResourcesDir, "malicious_hashes.txt")
 	DataCenterDbFile = filepath.Join(ResourcesDir, "datacenters.json")
@@ -121,7 +121,7 @@ var blacklistLock sync.RWMutex
 var dataCenterCatalog []DataCenterRecord
 var dataCenterLock sync.RWMutex
 
-// Parsed networks list for rapid CIDR match lookup
+// Cloud CIDR ranges for network lookup
 var cloudIPNetworks []net.IPNet
 var networkListLock sync.RWMutex
 
@@ -412,13 +412,12 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 			geoCacheLock.Unlock()
 			WriteEvent(GeoLog, geoData)
 
-			// Evaluation Vector: Determine if target IP is outside cloud networks (Home/Residential Network target)
 			isDataCenterNetwork := CheckIPAgainstCloudRanges(normalizedIP)
 			
 			memRegistryLock.Lock()
 			if procData, exists := activeProcessMemRegistry[guid]; exists {
 				if !isDataCenterNetwork {
-					// Anomaly: Target falls outside verified datacenter blocks -> Home Network/Residential IP
+					// Flag external IPs that don't belong to known datacenters
 					procData.ThreatScore += 15
 					if procData.ThreatScore > 100 {
 						procData.ThreatScore = 100
@@ -509,7 +508,7 @@ func StartBackgroundService() {
 	if name, err := os.Hostname(); err == nil { sysHostname = name }
 	SessionDataDir = filepath.Join("data", time.Now().Format("20060102_150405"))
 
-	// 1. Download and parse hash list
+	// Download and parse malicious hash database
 	_ = DownloadFileAsset(MaliciousDbFile, "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/refs/heads/main/full-hash-sha256-aa.txt")
 	if dbFile, err := os.Open(MaliciousDbFile); err == nil {
 		scanner := bufio.NewScanner(dbFile)
@@ -524,7 +523,7 @@ func StartBackgroundService() {
 		dbFile.Close()
 	}
 
-	// 2. Download data centers database mapping
+	// Download and load datacenter catalog
 	_ = DownloadFileAsset(DataCenterDbFile, "https://raw.githubusercontent.com/Ringmast4r/Global-Data-Center-Map/refs/heads/main/datacenters.json")
 	if dcFile, err := os.Open(DataCenterDbFile); err == nil {
 		var records []DataCenterRecord
@@ -536,7 +535,7 @@ func StartBackgroundService() {
 		dcFile.Close()
 	}
 
-	// 3. Download and compile the All-In-One Cloud/Infrastructure CIDR lists
+	// Download and parse cloud infrastructure IP ranges
 	_ = DownloadFileAsset(IPv4RangesFile, "https://raw.githubusercontent.com/lord-alfred/ipranges/main/all/ipv4_merged.txt")
 	_ = DownloadFileAsset(IPv6RangesFile, "https://raw.githubusercontent.com/lord-alfred/ipranges/main/all/ipv6_merged.txt")
 	LoadNetworkRanges(IPv4RangesFile)

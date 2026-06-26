@@ -31,7 +31,7 @@ func isScanRunning() bool {
 	return isTracking
 }
 
-// startScan spawns the background worker binary as an independent operating system process
+// startScan spawns the background scanner as a sub-process
 func startScan() bool {
 	scanMu.Lock()
 	defer scanMu.Unlock()
@@ -63,7 +63,7 @@ func startScan() bool {
 	return true
 }
 
-// stopScan safely kills the independent background tracking process
+// stopScan stops the background scanner process
 func stopScan() bool {
 	scanMu.Lock()
 	defer scanMu.Unlock()
@@ -80,7 +80,7 @@ func stopScan() bool {
 	return true
 }
 
-// ── Log File Parsers ─────────────────────────────────────────────────────────
+// LOG FILE PARSERS
 
 type SessionSummary struct {
 	ID           string    `json:"id"`
@@ -178,7 +178,7 @@ func readJSONL(path string) ([]json.RawMessage, error) {
 	return out, s.Err()
 }
 
-// ── HTTP API Handlers ────────────────────────────────────────────────────────
+// HTTP API HANDLERS
 
 func jsonResp(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
@@ -285,7 +285,7 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 	jsonResp(w, 200, rows)
 }
 
-// ── Server Entry Point ───────────────────────────────────────────────────────
+// SERVER ENTRY POINT
 
 func StartServer(addr string) {
 	mux := http.NewServeMux()
@@ -303,10 +303,10 @@ func StartServer(addr string) {
 		publicFS = http.FS(strippedEmbed)
 	}
 
-	// Serve static front-end workspace portal assets
+	// Serve static front-end assets
 	mux.Handle("/", http.FileServer(publicFS))
 
-	// Data Center File Exposer Route Endpoint
+	// Serve datacenters file
 	mux.HandleFunc("/datacenters.json", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
 		data, err := os.ReadFile(filepath.Join("resources", "datacenters.json"))
@@ -317,7 +317,7 @@ func StartServer(addr string) {
 		w.Write(data)
 	})
 
-	// Control Plane endpoints
+	// API endpoints
 	mux.HandleFunc("/api/status", handleStatus)
 	mux.HandleFunc("/api/scan/start", handleStartScan)
 	mux.HandleFunc("/api/scan/stop", handleStopScan)
