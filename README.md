@@ -14,9 +14,9 @@ NetShip is a local host monitoring utility that tracks socket connections, profi
 
 * **Network Tracking:** Logs active TCP/UDP sockets (IPv4/IPv6) with local and remote endpoints, directionality, and connection states.
 * **Process Profiling:** Tracks process registry events, parent-child execution lineages, execution paths, and command-line arguments.
-* **Threat Auditing:** Computes SHA256 hashes of running binaries to check against known malware databases and calculates threat scores based on process paths, parentage, and network volumes.
-* **IP Geolocation:** Resolves external IPs using public databases to plot coordinates and determine proximity to enterprise cloud datacenters.
-* **Intelligence Lookup & Export:** Features built-in links to scan hashes on VirusTotal, lookup external IPs on IPInfo, and export local log tables directly to CSV format.
+* **Threat Auditing:** Computes SHA256 hashes of running binaries to check against local malware databases, queries the public **ThreatFox (Abuse.ch)** API for malicious IOC hashes/IPs in real-time, and flags threat warnings based on execution vitals.
+* **IP Geolocation & Domain Resolution:** Resolves external target IPs to geographic coordinates, ISP/carriers, and runs reverse DNS domain host queries to display connection pathways.
+* **Intelligence Lookup & Export:** Features interactive detail actions to lookup processes on Google, scan hashes on VirusTotal, query IPs on IPInfo, and export telemetries directly to CSV tables.
 
 ---
 
