@@ -16,6 +16,7 @@ NetShip is a local host monitoring utility that tracks socket connections, profi
 * **Process Profiling:** Tracks process registry events, parent-child execution lineages, execution paths, and command-line arguments.
 * **Threat Auditing:** Computes SHA256 hashes of running binaries to check against known malware databases and calculates threat scores based on process paths, parentage, and network volumes.
 * **IP Geolocation:** Resolves external IPs using public databases to plot coordinates and determine proximity to enterprise cloud datacenters.
+* **Intelligence Lookup & Export:** Features built-in links to scan hashes on VirusTotal, lookup external IPs on IPInfo, and export local log tables directly to CSV format.
 
 ---
 
@@ -23,10 +24,10 @@ NetShip is a local host monitoring utility that tracks socket connections, profi
 
 The web dashboard is served directly from the application and contains:
 
-* **Overview:** System statistics (active connections, scanned hashes) and the latest threat alerts ledger.
-* **Analytics:** Process activity timelines, protocol ratios (TCP vs. UDP), port distributions, and process churn charts.
+* **Overview:** Cumulative threat gauge showing current system status, statistics, and a recent alerts ledger.
+* **Analytics:** Flicker-free connection timelines, protocol ratios (TCP vs. UDP), port distributions, and process churn charts.
 * **Network Map:** Geospatial mapping of outbound IP targets relative to global datacenter nodes.
-* **Process Tree:** Real-time tree view of process ancestry and parent-child spawning relationships.
+* **Process Tree:** Lineage relation cards illustrating parent-to-child process spawning dependencies.
 * **Sessions & Diff Matrix:** Historic session explorer and comparison tool to analyze process drift between two runs.
 
 ---

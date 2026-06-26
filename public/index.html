@@ -49,6 +49,17 @@
 
       <main id="view-viewport">
         <div id="panel-overview" class="panel active">
+          <!-- Cumulative Threat Gauge -->
+          <div class="threat-gauge-container">
+            <div class="gauge-bar">
+              <div id="gauge-fill" class="gauge-fill" style="width: 0%"></div>
+            </div>
+            <div class="gauge-labels">
+              <span id="gauge-status-text">SYSTEM STATUS: SAFE</span>
+              <span id="gauge-score-val">Cumulative Score: 0</span>
+            </div>
+          </div>
+
           <div class="metrics-grid">
             <div class="metric-card"><div class="title">Active Processes</div><div class="value" id="count-proc">0</div></div>
             <div class="metric-card"><div class="title">Network Events</div><div class="value" id="count-net">0</div></div>
@@ -75,17 +86,20 @@
           </div>
         </div>
 
-        <div id="panel-map" class="panel" style="height: calc(100vh - 55px); padding: 0;">
+        <div id="panel-map" class="panel" style="height: calc(100vh - 60px); padding: 0;">
           <div id="map-canvas-container" style="width: 100%; height: 100%;"></div>
         </div>
 
         <div id="panel-tree" class="panel">
-          <h3>Process Tree</h3>
+          <h3>Process Spawning Spans</h3>
           <div id="tree-container" class="tree-container"></div>
         </div>
 
         <div id="panel-network" class="panel">
-            <h3>Network Events</h3>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+              <h3>Network Events</h3>
+              <button onclick="exportTableData('network')" class="btn-primary" style="padding:6px 12px; font-size:11px;">Export CSV</button>
+            </div>
             <div class="scannable-table-wrapper">
               <table>
                 <thead><tr>
@@ -101,7 +115,10 @@
         </div>
 
         <div id="panel-processes" class="panel">
-            <h3>Processes</h3>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+              <h3>Processes</h3>
+              <button onclick="exportTableData('processes')" class="btn-primary" style="padding:6px 12px; font-size:11px;">Export CSV</button>
+            </div>
             <div class="scannable-table-wrapper">
               <table>
                 <thead><tr>
@@ -117,7 +134,10 @@
         </div>
 
         <div id="panel-hashes" class="panel">
-            <h3>File Hashes</h3>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:15px;">
+              <h3>File Hashes</h3>
+              <button onclick="exportTableData('hashes')" class="btn-primary" style="padding:6px 12px; font-size:11px;">Export CSV</button>
+            </div>
             <div class="scannable-table-wrapper">
               <table>
                 <thead><tr>
@@ -150,11 +170,11 @@
           </div>
           <div class="comparison-matrix">
             <div class="matrix-col">
-              <h4 style="color:#ffb300;">Only in Session A</h4>
+              <h4 style="color:#f59e0b;">Only in Session A</h4>
               <ul id="diff-missing" class="diff-list"></ul>
             </div>
             <div class="matrix-col">
-              <h4 style="color:#00ffaa;">Only in Session B</h4>
+              <h4 style="color:#10b981;">Only in Session B</h4>
               <ul id="diff-new" class="diff-list"></ul>
             </div>
           </div>
@@ -168,8 +188,9 @@
       <h3 id="drawer-title">Details</h3>
       <button id="close-drawer" class="btn-close">×</button>
     </div>
-    <div class="drawer-content">
-      <pre><code id="drawer-json"></code></pre>
+    <div class="drawer-content" style="display:flex; flex-direction:column; gap:16px;">
+      <div id="drawer-intel-actions" class="drawer-actions" style="display:flex; gap:10px;"></div>
+      <pre style="flex:1; margin:0;"><code id="drawer-json"></code></pre>
     </div>
   </div>
 

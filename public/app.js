@@ -26,18 +26,32 @@ async function updateState() {
   if (!statusResp) return;
 
   const banner = document.getElementById("status-banner");
+  const pulse = document.getElementById("engine-pulse");
+
   if (statusResp.running) {
     state.mode = "live";
     state.sessionId = statusResp.session_dir;
     banner.className = "status-banner live";
     banner.innerText = `LIVE SCAN: ${state.sessionId}`;
+    if (pulse) {
+      pulse.classList.remove("idle");
+      pulse.classList.add("live");
+    }
   } else if (state.mode !== "history") {
     state.mode = "offline";
     banner.className = "status-banner offline";
     banner.innerText = "SYSTEM IDLE";
+    if (pulse) {
+      pulse.classList.remove("live");
+      pulse.classList.add("idle");
+    }
   } else {
     banner.className = "status-banner history";
     banner.innerText = `HISTORY LOG: ${state.sessionId}`;
+    if (pulse) {
+      pulse.classList.remove("live");
+      pulse.classList.add("idle");
+    }
   }
 
   if (state.mode !== "offline") await fetchTelemetry();
@@ -104,6 +118,29 @@ function renderOverview(data) {
   });
   
   document.getElementById("count-threat").innerText = totalScore;
+
+  // Update Threat Status Gauge
+  const gaugeFill = document.getElementById("gauge-fill");
+  const gaugeStatusText = document.getElementById("gauge-status-text");
+  const gaugeScoreVal = document.getElementById("gauge-score-val");
+  
+  if (gaugeFill && gaugeStatusText && gaugeScoreVal) {
+    const maxReference = 250;
+    const percentage = Math.min((totalScore / maxReference) * 100, 100);
+    gaugeFill.style.width = `${percentage}%`;
+    gaugeScoreVal.innerText = `Cumulative Score: ${totalScore}`;
+    
+    if (totalScore === 0) {
+      gaugeStatusText.innerText = "SYSTEM STATUS: SAFE";
+      gaugeStatusText.style.color = "var(--success)";
+    } else if (totalScore < 100) {
+      gaugeStatusText.innerText = "SYSTEM STATUS: DEVIATIONS DETECTED";
+      gaugeStatusText.style.color = "var(--warn)";
+    } else {
+      gaugeStatusText.innerText = "SYSTEM STATUS: SUSPICIOUS/ALERT STATE";
+      gaugeStatusText.style.color = "var(--alert)";
+    }
+  }
   
   const alertsHtml = alerts.slice(-10).reverse().map(p => {
     return `<tr onclick='openDrawer("Alert Details", ${JSON.stringify(p)})'>
@@ -194,6 +231,26 @@ function renderTables(data) {
 function openDrawer(title, rawData) {
   document.getElementById("drawer-title").innerText = title;
   document.getElementById("drawer-json").innerText = JSON.stringify(rawData, null, 2);
+  
+  const actionsEl = document.getElementById("drawer-intel-actions");
+  if (actionsEl) {
+    actionsEl.innerHTML = "";
+    if (rawData.sha256) {
+      actionsEl.innerHTML += `<a href="https://www.virustotal.com/gui/file/${rawData.sha256}" target="_blank" class="intel-btn">🛡️ VirusTotal</a>`;
+    }
+    if (rawData.process && rawData.process.name) {
+      actionsEl.innerHTML += `<a href="https://www.google.com/search?q=${encodeURIComponent(rawData.process.name)}+process+security" target="_blank" class="intel-btn">🔍 Search Info</a>`;
+    } else if (rawData.child_name) {
+      actionsEl.innerHTML += `<a href="https://www.google.com/search?q=${encodeURIComponent(rawData.child_name)}+process+security" target="_blank" class="intel-btn">🔍 Search Info</a>`;
+    }
+    const conn = rawData.connection;
+    if (conn && conn.remote_ip && conn.remote_ip !== "127.0.0.1" && conn.remote_ip !== "::1") {
+      actionsEl.innerHTML += `<a href="https://ipinfo.io/${conn.remote_ip}" target="_blank" class="intel-btn">🌐 IPInfo Lookup</a>`;
+    } else if (rawData.ip && rawData.ip !== "127.0.0.1" && rawData.ip !== "::1") {
+      actionsEl.innerHTML += `<a href="https://ipinfo.io/${rawData.ip}" target="_blank" class="intel-btn">🌐 IPInfo Lookup</a>`;
+    }
+  }
+
   document.getElementById("json-drawer").classList.add("open");
 }
 
@@ -209,8 +266,38 @@ function renderCharts(data) {
     const ctx = document.getElementById(id).getContext('2d');
     state.charts[id] = new Chart(ctx, {
       type: type,
-      data: { labels, datasets: [{ label, data: datasetData, backgroundColor: colors, borderColor: type==='line'?'var(--neon)':'#161b22', fill: type==='line'}] },
-      options: { responsive: true, maintainAspectRatio: false, plugins: { legend: { display: type !== 'line', labels:{color:'#8b949e'} } }, scales: type === 'line' || type === 'bar' ? {x:{ticks:{color:'#8b949e'}}, y:{ticks:{color:'#8b949e'}, beginAtZero:true}} : {} }
+      data: { 
+        labels, 
+        datasets: [{ 
+          label, 
+          data: datasetData, 
+          backgroundColor: colors, 
+          borderColor: type === 'line' ? '#6366f1' : '#111827', 
+          fill: type === 'line',
+          tension: type === 'line' ? 0.35 : 0
+        }] 
+      },
+      options: { 
+        responsive: true, 
+        maintainAspectRatio: false, 
+        plugins: { 
+          legend: { 
+            display: type !== 'line', 
+            labels: { color: '#cbd5e1', font: { family: 'Inter', size: 11 } } 
+          } 
+        }, 
+        scales: type === 'line' || type === 'bar' ? {
+          x: { 
+            ticks: { color: '#64748b', font: { family: 'Inter', size: 10 } },
+            grid: { color: 'rgba(255, 255, 255, 0.04)' }
+          }, 
+          y: { 
+            ticks: { color: '#64748b', font: { family: 'Inter', size: 10 } }, 
+            grid: { color: 'rgba(255, 255, 255, 0.04)' },
+            beginAtZero: true
+          }
+        } : {} 
+      }
     });
   };
 
@@ -221,7 +308,7 @@ function renderCharts(data) {
     if(time) netTimeBuckets[time] = (netTimeBuckets[time] || 0) + 1;
   });
   const netLabels = Object.keys(netTimeBuckets).sort().slice(-40); 
-  makeChart('chart-timeline', 'line', netLabels, netLabels.map(l=>netTimeBuckets[l]), 'rgba(88, 166, 255, 0.1)', 'Network Events');
+  makeChart('chart-timeline', 'line', netLabels, netLabels.map(l=>netTimeBuckets[l]), 'rgba(99, 102, 241, 0.08)', 'Network Events');
 
   let procTimeBuckets = {};
   data.processes.forEach(p => {
@@ -240,30 +327,49 @@ function renderCharts(data) {
     data: {
       labels: procLabels,
       datasets: [
-        { label: 'Created', data: procLabels.map(l => procTimeBuckets[l].start), borderColor: '#2ea043', backgroundColor: 'rgba(46, 160, 67, 0.1)', fill: true, tension: 0.2 },
-        { label: 'Ended', data: procLabels.map(l => procTimeBuckets[l].stop), borderColor: '#f85149', backgroundColor: 'rgba(248, 81, 73, 0.1)', fill: true, tension: 0.2 }
+        { label: 'Created', data: procLabels.map(l => procTimeBuckets[l].start), borderColor: '#10b981', backgroundColor: 'rgba(16, 185, 129, 0.08)', fill: true, tension: 0.35 },
+        { label: 'Ended', data: procLabels.map(l => procTimeBuckets[l].stop), borderColor: '#ef4444', backgroundColor: 'rgba(239, 68, 68, 0.08)', fill: true, tension: 0.35 }
       ]
     },
-    options: { responsive: true, maintainAspectRatio: false, scales: { x: { ticks: { color: '#8b949e' } }, y: { ticks: { color: '#8b949e' }, beginAtZero: true } }, plugins: { legend: { labels: { color: '#c9d1d9' } } } }
+    options: { 
+      responsive: true, 
+      maintainAspectRatio: false, 
+      scales: { 
+        x: { 
+          ticks: { color: '#64748b', font: { family: 'Inter', size: 10 } },
+          grid: { color: 'rgba(255, 255, 255, 0.04)' }
+        }, 
+        y: { 
+          ticks: { color: '#64748b', font: { family: 'Inter', size: 10 } }, 
+          grid: { color: 'rgba(255, 255, 255, 0.04)' },
+          beginAtZero: true 
+        } 
+      }, 
+      plugins: { 
+        legend: { 
+          labels: { color: '#cbd5e1', font: { family: 'Inter', size: 11 } } 
+        } 
+      } 
+    }
   });
 
   let procCount = {};
   data.processes.forEach(p => { if(p.process) procCount[p.process.name] = (procCount[p.process.name]||0) + 1; });
   let sortProc = Object.entries(procCount).sort((a,b)=>b[1]-a[1]).slice(0, 6);
-  makeChart('chart-top-procs', 'bar', sortProc.map(k=>k[0]), sortProc.map(k=>k[1]), '#58a6ff', 'Executions');
+  makeChart('chart-top-procs', 'bar', sortProc.map(k=>k[0]), sortProc.map(k=>k[1]), '#6366f1', 'Executions');
 
   let portCount = {};
   data.network.forEach(n => { if(n.connection && n.connection.remote_port) portCount[n.connection.remote_port] = (portCount[n.connection.remote_port]||0) + 1; });
   let sortPort = Object.entries(portCount).sort((a,b)=>b[1]-a[1]).slice(0, 6);
-  makeChart('chart-ports', 'doughnut', sortPort.map(k=>k[0]), sortPort.map(k=>k[1]), ['#58a6ff', '#2ea043', '#d29922', '#f85149', '#a371f7', '#8b949e'], 'Connections');
+  makeChart('chart-ports', 'doughnut', sortPort.map(k=>k[0]), sortPort.map(k=>k[1]), ['#6366f1', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#64748b'], 'Connections');
 
   let protoCount = { TCP: 0, UDP: 0 };
   data.network.forEach(n => { if(n.connection && n.connection.protocol_type) protoCount[n.connection.protocol_type]++; });
-  makeChart('chart-protocol-type', 'doughnut', Object.keys(protoCount), Object.values(protoCount), ['#58a6ff', '#a371f7'], 'Protocol');
+  makeChart('chart-protocol-type', 'doughnut', Object.keys(protoCount), Object.values(protoCount), ['#6366f1', '#8b5cf6'], 'Protocol');
 
   let ipCount = { IPv4: 0, IPv6: 0 };
   data.network.forEach(n => { if(n.connection && n.connection.ip_version) ipCount[n.connection.ip_version]++; });
-  makeChart('chart-ip-version', 'doughnut', Object.keys(ipCount), Object.values(ipCount), ['#2ea043', '#d29922'], 'IP Version');
+  makeChart('chart-ip-version', 'doughnut', Object.keys(ipCount), Object.values(ipCount), ['#10b981', '#f59e0b'], 'IP Version');
 }
 
 // --- Geographic Map Engine (No Central Home Node, Zoom Adaptive Links) ---
@@ -378,13 +484,26 @@ function renderProcessTree(data) {
 
   let html = "";
   data.children.slice(-100).forEach(c => {
-    const pName = nameMap[c.parent_process_guid] || "Parent Process";
+    const pName = nameMap[c.parent_process_guid] || "System Parent";
     const cName = c.child_name;
-    const isBad = cName.toLowerCase().includes("powershell") || cName.toLowerCase().includes("cmd");
-    html += `<div class="tree-node" onclick='openDrawer("Lineage Event", ${JSON.stringify(c)})' style="cursor:pointer;">
-        <span class="tree-item">${pName}</span> spawned 
-        <span class="tree-item ${isBad ? 'bad' : ''}">↘ ${cName} (PID: ${c.child_pid})</span>
-      </div>`;
+    const isBad = cName.toLowerCase().includes("powershell") || cName.toLowerCase().includes("cmd") || cName.toLowerCase().includes("wscript") || cName.toLowerCase().includes("mshta");
+    
+    html += `
+      <div class="tree-relation-card" onclick='openDrawer("Lineage Event", ${JSON.stringify(c)})'>
+        <div class="tree-party parent-party">
+          <span class="party-tag">PARENT PROCESS</span>
+          <span class="party-name">${pName}</span>
+        </div>
+        <div class="tree-connector">
+          <span class="connector-arrow">➔</span>
+          <span class="connector-label">spawned</span>
+        </div>
+        <div class="tree-party child-party ${isBad ? 'warning-party' : ''}">
+          <span class="party-tag">CHILD PROCESS (PID: ${c.child_pid})</span>
+          <span class="party-name">${cName}</span>
+        </div>
+      </div>
+    `;
   });
   container.innerHTML = html;
 }
@@ -462,3 +581,78 @@ function fmtTime(ts) {
 }
 
 window.addEventListener("DOMContentLoaded", init);
+
+// Telemetry Data CSV Export Utility
+function exportTableData(type) {
+  const records = state.data[type];
+  if (!records || records.length === 0) {
+    alert("No records available to export.");
+    return;
+  }
+
+  let headers = [];
+  let rowMapper = () => {};
+
+  if (type === "network") {
+    headers = ["Timestamp", "Protocol", "PID", "Local IP", "Local Port", "Remote IP", "Remote Port", "Direction", "State"];
+    rowMapper = (r) => {
+      const c = r.connection || {};
+      return [
+        r.timestamp || "",
+        c.protocol_type || "",
+        c.pid || "",
+        c.local_ip || "",
+        c.local_port || "",
+        c.remote_ip || "",
+        c.remote_port || "",
+        c.direction || "",
+        c.status || ""
+      ];
+    };
+  } else if (type === "processes") {
+    headers = ["Timestamp", "Action", "PID", "Process Name", "Threat Score", "Executable Path", "Command Line", "Username"];
+    rowMapper = (r) => {
+      const p = r.process || {};
+      return [
+        r.timestamp || "",
+        r.action || "",
+        p.pid || "",
+        p.name || "",
+        p.threat_score || 0,
+        p.path || "",
+        `"${(p.cmdline || "").replace(/"/g, '""')}"`,
+        p.username || ""
+      ];
+    };
+  } else if (type === "hashes") {
+    headers = ["Timestamp", "Process GUID", "File Name", "SHA256 Hash", "Status"];
+    rowMapper = (r) => [
+      r.timestamp || "",
+      r.process_guid || "",
+      r.file_name || "",
+      r.sha256 || "",
+      r.status || ""
+    ];
+  } else {
+    alert("Unsupported export format.");
+    return;
+  }
+
+  const csvRows = [headers.join(",")];
+  records.forEach(r => {
+    const values = rowMapper(r).map(val => {
+      const cleaned = ('' + val).replace(/"/g, '""');
+      return cleaned.includes(',') || cleaned.includes('\n') || cleaned.includes('"') ? `"${cleaned}"` : cleaned;
+    });
+    csvRows.push(values.join(","));
+  });
+
+  const csvBlob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const csvUrl = URL.createObjectURL(csvBlob);
+  const downloadLink = document.createElement("a");
+  downloadLink.href = csvUrl;
+  downloadLink.setAttribute("download", `netship_${type}_export_${Date.now()}.csv`);
+  document.body.appendChild(downloadLink);
+  downloadLink.click();
+  document.body.removeChild(downloadLink);
+}
