@@ -20,81 +20,67 @@ import (
 var embeddedPublic embed.FS
 
 var (
-	scanMu     sync.Mutex
-	workerCmd  *exec.Cmd
-	isTracking bool
+	scanMu  sync.Mutex
+	procCmd *exec.Cmd
+	running bool
 )
 
 func isScanRunning() bool {
 	scanMu.Lock()
 	defer scanMu.Unlock()
-	return isTracking
+	return running
 }
 
-// Spawns background scan process
 func startScan() bool {
 	scanMu.Lock()
 	defer scanMu.Unlock()
-	
-	if isTracking {
+
+	if running {
 		return false
 	}
 
-	commandArgs := []string{"scan"}
-	cmd := exec.Command(os.Args[0], commandArgs...)
+	cmd := exec.Command(os.Args[0], "scan")
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 
-	err := cmd.Start()
-	if err != nil {
-		fmt.Printf("Error starting background scanner process: %v\n", err)
+	if err := cmd.Start(); err != nil {
+		fmt.Printf("Error starting scanner: %v\n", err)
 		return false
 	}
 
-	workerCmd = cmd
-	isTracking = true
+	procCmd = cmd
+	running = true
 
 	go func() {
-		err = workerCmd.Wait()
-		if err != nil {
-			fmt.Printf("Scanner process exited with notification: %v\n", err)
+		if err := procCmd.Wait(); err != nil {
+			fmt.Printf("Scanner exited: %v\n", err)
 		}
-		
 		scanMu.Lock()
-		isTracking = false
-		workerCmd = nil
+		running = false
+		procCmd = nil
 		scanMu.Unlock()
-		
-		fmt.Println("Background scanner process has terminated.")
 	}()
 
 	return true
 }
 
-// Terminates background scan process
 func stopScan() bool {
 	scanMu.Lock()
 	defer scanMu.Unlock()
-	
-	if !isTracking {
-		return false
-	}
-	if workerCmd == nil {
+
+	if !running || procCmd == nil {
 		return false
 	}
 
-	err := workerCmd.Process.Kill()
-	if err != nil {
-		fmt.Printf("Error encountered killing scanner process: %v\n", err)
+	if err := procCmd.Process.Kill(); err != nil {
+		fmt.Printf("Error killing scanner: %v\n", err)
 		return false
 	}
 
-	isTracking = false
-	workerCmd = nil
+	running = false
+	procCmd = nil
 	return true
 }
-
-// LOG FILE PARSERS
 
 type SessionSummary struct {
 	ID           string    `json:"id"`
@@ -109,8 +95,7 @@ func listSessions() ([]SessionSummary, error) {
 	entries, err := os.ReadDir("data")
 	if err != nil {
 		if os.IsNotExist(err) {
-			emptySummaryList := []SessionSummary{}
-			return emptySummaryList, nil
+			return []SessionSummary{}, nil
 		}
 		return nil, err
 	}
@@ -120,37 +105,32 @@ func listSessions() ([]SessionSummary, error) {
 		if !entry.IsDir() {
 			continue
 		}
-		
-		sessionName := entry.Name()
-		dirPath := filepath.Join("data", sessionName)
-		startedTime, err := time.Parse("20060102_150405", sessionName)
+
+		name := entry.Name()
+		dir := filepath.Join("data", name)
+		started, err := time.Parse("20060102_150405", name)
 		if err != nil {
-			startedTime = time.Time{}
+			started = time.Time{}
 		}
 
-		netCount := countLines(filepath.Join(dirPath, "network.jsonl"))
-		procCount := countLines(filepath.Join(dirPath, "processes.jsonl"))
-		threatCount := countThreats(filepath.Join(dirPath, "threat_hashes.jsonl"))
-
-		hasThreats := false
-		if threatCount > 0 {
-			hasThreats = true
-		}
+		netCount := countLines(filepath.Join(dir, "network.jsonl"))
+		procCount := countLines(filepath.Join(dir, "processes.jsonl"))
+		threatCount := countThreats(filepath.Join(dir, "threat_hashes.jsonl"))
 
 		sessions = append(sessions, SessionSummary{
-			ID:           sessionName,
-			StartedAt:    startedTime,
+			ID:           name,
+			StartedAt:    started,
 			NetworkCount: netCount,
 			ProcessCount: procCount,
 			ThreatCount:  threatCount,
-			HasThreats:   hasThreats,
+			HasThreats:   threatCount > 0,
 		})
 	}
 
 	sort.Slice(sessions, func(i, j int) bool {
 		return sessions[i].StartedAt.After(sessions[j].StartedAt)
 	})
-	
+
 	return sessions, nil
 }
 
@@ -160,18 +140,15 @@ func countLines(path string) int {
 		return 0
 	}
 	defer file.Close()
-	
+
 	scanner := bufio.NewScanner(file)
-	lineCount := 0
-	
+	count := 0
 	for scanner.Scan() {
-		text := strings.TrimSpace(scanner.Text())
-		if text != "" {
-			lineCount = lineCount + 1
+		if strings.TrimSpace(scanner.Text()) != "" {
+			count++
 		}
 	}
-	
-	return lineCount
+	return count
 }
 
 func countThreats(path string) int {
@@ -180,134 +157,107 @@ func countThreats(path string) int {
 		return 0
 	}
 	defer file.Close()
-	
+
 	scanner := bufio.NewScanner(file)
-	threatCount := 0
-	
+	count := 0
 	for scanner.Scan() {
-		text := scanner.Text()
-		if strings.Contains(text, `"MALICIOUS"`) {
-			threatCount = threatCount + 1
+		if strings.Contains(scanner.Text(), `"MALICIOUS"`) {
+			count++
 		}
 	}
-	
-	return threatCount
+	return count
 }
 
 func readJSONL(path string) ([]json.RawMessage, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
-			emptyList := []json.RawMessage{}
-			return emptyList, nil
+			return []json.RawMessage{}, nil
 		}
 		return nil, err
 	}
 	defer file.Close()
 
-	var outputRows []json.RawMessage
+	var rows []json.RawMessage
 	scanner := bufio.NewScanner(file)
-	
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
+		if line != "" {
+			rows = append(rows, json.RawMessage(line))
 		}
-		outputRows = append(outputRows, json.RawMessage(line))
 	}
-	
-	err = scanner.Err()
-	if err != nil {
+
+	if err := scanner.Err(); err != nil {
 		return nil, err
 	}
-	
-	return outputRows, nil
+	return rows, nil
 }
 
-// HTTP API HANDLERS
-
-func writeJSONResponse(w http.ResponseWriter, statusCode int, payload interface{}) {
+func writeJSON(w http.ResponseWriter, code int, val interface{}) {
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(statusCode)
-	
-	encoder := json.NewEncoder(w)
-	err := encoder.Encode(payload)
-	if err != nil {
-		fmt.Printf("Error writing JSON payload: %v\n", err)
+	w.WriteHeader(code)
+	if err := json.NewEncoder(w).Encode(val); err != nil {
+		fmt.Printf("Error writing JSON response: %v\n", err)
 	}
 }
 
 func handleStatus(w http.ResponseWriter, r *http.Request) {
-	activeSessionID := ""
+	activeSession := ""
 	sessions, _ := listSessions()
-	
-	runningState := isScanRunning()
-	if len(sessions) > 0 && runningState {
-		activeSessionID = sessions[0].ID
+	active := isScanRunning()
+	if len(sessions) > 0 && active {
+		activeSession = sessions[0].ID
 	}
-	
-	responseMap := map[string]interface{}{
-		"running":     runningState,
-		"session_dir": activeSessionID,
-	}
-	
-	writeJSONResponse(w, 200, responseMap)
+
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"running":     active,
+		"session_dir": activeSession,
+	})
 }
 
 func handleStartScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST HTTP Method Required", http.StatusMethodNotAllowed)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
-	started := startScan()
-	if started {
-		response := map[string]string{"status": "started"}
-		writeJSONResponse(w, 200, response)
+
+	if startScan() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
 	} else {
-		response := map[string]string{"error": "Scanner process is already running"}
-		writeJSONResponse(w, http.StatusConflict, response)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Scanner is already running"})
 	}
 }
 
 func handleStopScan(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodPost {
-		http.Error(w, "POST HTTP Method Required", http.StatusMethodNotAllowed)
+		http.Error(w, "Method Not Allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
-	stopped := stopScan()
-	if stopped {
-		response := map[string]string{"status": "stopped"}
-		writeJSONResponse(w, 200, response)
+
+	if stopScan() {
+		writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
 	} else {
-		response := map[string]string{"error": "Scanner process is not running"}
-		writeJSONResponse(w, http.StatusConflict, response)
+		writeJSON(w, http.StatusConflict, map[string]string{"error": "Scanner is not running"})
 	}
 }
 
 func handleSessions(w http.ResponseWriter, r *http.Request) {
 	sessions, err := listSessions()
 	if err != nil {
-		errorResponse := map[string]string{"error": err.Error()}
-		writeJSONResponse(w, http.StatusInternalServerError, errorResponse)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
 		return
 	}
-	writeJSONResponse(w, 200, sessions)
+	writeJSON(w, http.StatusOK, sessions)
 }
 
 func handleSessionData(w http.ResponseWriter, r *http.Request) {
-	requestPath := strings.TrimPrefix(r.URL.Path, "/api/session/")
-	pathParts := strings.Split(requestPath, "/")
-	
-	if len(pathParts) != 2 {
-		http.Error(w, "Bad request path format", http.StatusBadRequest)
+	parts := strings.Split(strings.TrimPrefix(r.URL.Path, "/api/session/"), "/")
+	if len(parts) != 2 {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
-	
-	sessionID := pathParts[0]
-	fileKey := pathParts[1]
 
+	sessionID, fileKey := parts[0], parts[1]
 	fileMap := map[string]string{
 		"network":  "network.jsonl",
 		"process":  "processes.jsonl",
@@ -315,32 +265,28 @@ func handleSessionData(w http.ResponseWriter, r *http.Request) {
 		"geo":      "geolocation.jsonl",
 		"hashes":   "threat_hashes.jsonl",
 	}
-	
-	fileName, isValidKey := fileMap[fileKey]
-	if !isValidKey {
-		http.Error(w, "Invalid data file target", http.StatusBadRequest)
-		return
-	}
-	
-	if strings.Contains(sessionID, "..") || strings.Contains(sessionID, "/") {
-		http.Error(w, "Invalid path query parameters detected", http.StatusBadRequest)
+
+	fileName, ok := fileMap[fileKey]
+	if !ok {
+		http.Error(w, "Invalid file key", http.StatusBadRequest)
 		return
 	}
 
-	targetFilePath := filepath.Join("data", sessionID, fileName)
-	rows, err := readJSONL(targetFilePath)
-	if err != nil {
-		errorResponse := map[string]string{"error": err.Error()}
-		writeJSONResponse(w, http.StatusInternalServerError, errorResponse)
+	if strings.Contains(sessionID, "..") || strings.Contains(sessionID, "/") {
+		http.Error(w, "Bad Request", http.StatusBadRequest)
 		return
 	}
-	
-	writeJSONResponse(w, 200, rows)
+
+	rows, err := readJSONL(filepath.Join("data", sessionID, fileName))
+	if err != nil {
+		writeJSON(w, http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		return
+	}
+	writeJSON(w, http.StatusOK, rows)
 }
 
 func handleLive(w http.ResponseWriter, r *http.Request) {
 	fileKey := strings.TrimPrefix(r.URL.Path, "/api/live/")
-	
 	fileMap := map[string]string{
 		"network":  "network.jsonl",
 		"process":  "processes.jsonl",
@@ -348,40 +294,32 @@ func handleLive(w http.ResponseWriter, r *http.Request) {
 		"geo":      "geolocation.jsonl",
 		"hashes":   "threat_hashes.jsonl",
 	}
-	
-	fileName, isValidKey := fileMap[fileKey]
-	if !isValidKey {
-		http.Error(w, "Invalid live channel target", http.StatusBadRequest)
+
+	fileName, ok := fileMap[fileKey]
+	if !ok {
+		http.Error(w, "Invalid live channel", http.StatusBadRequest)
 		return
 	}
 
 	sessions, _ := listSessions()
 	if len(sessions) == 0 {
-		emptyList := []json.RawMessage{}
-		writeJSONResponse(w, 200, emptyList)
+		writeJSON(w, http.StatusOK, []json.RawMessage{})
 		return
 	}
 
-	targetFilePath := filepath.Join("data", sessions[0].ID, fileName)
-	rows, err := readJSONL(targetFilePath)
+	rows, err := readJSONL(filepath.Join("data", sessions[0].ID, fileName))
 	if err != nil {
-		emptyList := []json.RawMessage{}
-		writeJSONResponse(w, 200, emptyList)
+		writeJSON(w, http.StatusOK, []json.RawMessage{})
 		return
 	}
-	
-	writeJSONResponse(w, 200, rows)
+	writeJSON(w, http.StatusOK, rows)
 }
-
-// SERVER ENTRY POINT
 
 func StartServer(addr string) {
 	mux := http.NewServeMux()
 
 	var publicFS http.FileSystem
-	_, err := os.Stat("public")
-	
-	if err == nil {
+	if _, err := os.Stat("public"); err == nil {
 		fmt.Println("Serving files from local public folder")
 		publicFS = http.Dir("public")
 	} else {
@@ -414,10 +352,9 @@ func StartServer(addr string) {
 	mux.HandleFunc("/api/session/", handleSessionData)
 
 	fmt.Printf("Dashboard portal online at http://localhost%s\n", addr)
-	
-	err = http.ListenAndServe(addr, mux)
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "Server failed to bind: %v\n", err)
+
+	if err := http.ListenAndServe(addr, mux); err != nil {
+		fmt.Fprintf(os.Stderr, "Server failed: %v\n", err)
 		os.Exit(1)
 	}
 }

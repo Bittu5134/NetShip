@@ -19,20 +19,19 @@ import (
 	"github.com/shirou/gopsutil/v4/process"
 )
 
-// Structural Data Models
 type Socket struct {
-	Guid        string `json:"guid"`
-	Pid         int32  `json:"pid"`
-	Protocol    string `json:"protocol"`
-	IpVersion   string `json:"ip_version"`
-	LocalIp     string `json:"local_ip"`
-	LocalPort   uint32 `json:"local_port"`
-	RemoteIp    string `json:"remote_ip,omitempty"`
-	RemotePort  uint32 `json:"remote_port,omitempty"`
-	Direction   string `json:"direction"`
-	State       string `json:"state"`
-	IsLoopback  bool   `json:"is_loopback"`
-	Hostname    string `json:"hostname,omitempty"`
+	Guid       string `json:"guid"`
+	Pid        int32  `json:"pid"`
+	Protocol   string `json:"protocol"`
+	IpVersion  string `json:"ip_version"`
+	LocalIp    string `json:"local_ip"`
+	LocalPort  uint32 `json:"local_port"`
+	RemoteIp   string `json:"remote_ip,omitempty"`
+	RemotePort uint32 `json:"remote_port,omitempty"`
+	Direction  string `json:"direction"`
+	State      string `json:"state"`
+	IsLoopback bool   `json:"is_loopback"`
+	Hostname   string `json:"hostname,omitempty"`
 }
 
 type Process struct {
@@ -92,7 +91,6 @@ type Datacenter struct {
 	CityCoords []float64 `json:"city_coords"`
 }
 
-// Global Variables
 var (
 	SessionDataDir   string
 	NetworkLog       = "network.jsonl"
@@ -100,16 +98,13 @@ var (
 	ChildLog         = "children.jsonl"
 	GeoLog           = "geolocation.jsonl"
 	HashLog          = "threat_hashes.jsonl"
-
 	ResourcesDir     = "resources"
 	MaliciousDbFile  = filepath.Join(ResourcesDir, "malicious_hashes.txt")
 	DataCenterDbFile = filepath.Join(ResourcesDir, "datacenters.json")
 	IPv4RangesFile   = filepath.Join(ResourcesDir, "ipv4_merged.txt")
 	IPv6RangesFile   = filepath.Join(ResourcesDir, "ipv6_merged.txt")
+	sysHostname      = "unknown-host"
 
-	sysHostname = "unknown-host"
-	
-	// Cache structures
 	socketRegistry       = make(map[string]Socket)
 	processGuidRegistry  = make(map[int32]string)
 	socketReferenceCount = make(map[int32]int)
@@ -122,36 +117,27 @@ var (
 	activeProcessCache   = make(map[string]*Process)
 	hostnameCache        = make(map[string]string)
 
-	// Locks
-	fileWriteLock       sync.Mutex
-	geoCacheLock        sync.RWMutex
-	blacklistLock       sync.RWMutex
-	datacenterLock      sync.RWMutex
-	networkCidrLock     sync.RWMutex
-	signatureCacheLock  sync.Mutex
-	relationshipLock    sync.Mutex
-	processCacheLock    sync.Mutex
-	hostnameCacheLock   sync.RWMutex
+	fileWriteLock      sync.Mutex
+	geoCacheLock       sync.RWMutex
+	blacklistLock      sync.RWMutex
+	datacenterLock     sync.RWMutex
+	networkCidrLock    sync.RWMutex
+	signatureCacheLock sync.Mutex
+	relationshipLock   sync.Mutex
+	processCacheLock   sync.Mutex
+	hostnameCacheLock  sync.RWMutex
 )
 
-// Helper function to resolve reverse DNS domain names
 func ResolveIPHostname(ipStr string) string {
 	names, err := net.LookupAddr(ipStr)
-	if err != nil {
-		return ""
-	}
-	if len(names) == 0 {
+	if err != nil || len(names) == 0 {
 		return ""
 	}
 	return strings.TrimSuffix(names[0], ".")
 }
 
-// Retrieves hostname from cache or schedules async lookup
 func GetHostname(ip string) string {
-	if ip == "" {
-		return ""
-	}
-	if ip == "127.0.0.1" || ip == "::1" {
+	if ip == "" || ip == "127.0.0.1" || ip == "::1" {
 		return ""
 	}
 	if strings.HasPrefix(ip, "10.") || strings.HasPrefix(ip, "192.168.") {
@@ -159,18 +145,17 @@ func GetHostname(ip string) string {
 	}
 
 	hostnameCacheLock.RLock()
-	cachedName, exists := hostnameCache[ip]
+	cached, exists := hostnameCache[ip]
 	hostnameCacheLock.RUnlock()
 
 	if exists {
-		return cachedName
+		return cached
 	}
 
 	go func() {
-		resolvedName := ResolveIPHostname(ip)
-		if resolvedName != "" {
+		if resolved := ResolveIPHostname(ip); resolved != "" {
 			hostnameCacheLock.Lock()
-			hostnameCache[ip] = resolvedName
+			hostnameCache[ip] = resolved
 			hostnameCacheLock.Unlock()
 		}
 	}()
@@ -178,12 +163,8 @@ func GetHostname(ip string) string {
 	return ""
 }
 
-// Helper to query Abuse.ch ThreatFox API
 func QueryThreatFoxIOC(term string) (bool, string) {
-	client := &http.Client{
-		Timeout: 5 * time.Second,
-	}
-
+	client := &http.Client{Timeout: 5 * time.Second}
 	payload := fmt.Sprintf(`{"query": "search_ioc", "search_term": "%s"}`, term)
 	resp, err := client.Post("https://threatfox-api.abuse.ch/api/v1/", "application/json", strings.NewReader(payload))
 	if err != nil {
@@ -191,7 +172,7 @@ func QueryThreatFoxIOC(term string) (bool, string) {
 	}
 	defer resp.Body.Close()
 
-	var result struct {
+	var res struct {
 		QueryStatus string `json:"query_status"`
 		Data        []struct {
 			MalwarePrint string `json:"malware_printable"`
@@ -200,66 +181,51 @@ func QueryThreatFoxIOC(term string) (bool, string) {
 		} `json:"data"`
 	}
 
-	err = json.NewDecoder(resp.Body).Decode(&result)
-	if err != nil {
+	if err := json.NewDecoder(resp.Body).Decode(&res); err != nil {
 		return false, ""
 	}
 
-	if result.QueryStatus == "ok" && len(result.Data) > 0 {
-		threatInfo := fmt.Sprintf("ThreatFox: %s (%s, Confidence: %d%%)", result.Data[0].MalwarePrint, result.Data[0].ThreatType, result.Data[0].Confidence)
-		return true, threatInfo
+	if res.QueryStatus == "ok" && len(res.Data) > 0 {
+		info := fmt.Sprintf("ThreatFox: %s (%s, Confidence: %d%%)", res.Data[0].MalwarePrint, res.Data[0].ThreatType, res.Data[0].Confidence)
+		return true, info
 	}
 
 	return false, ""
 }
 
-// Generates a unique guid based on hostname, pid, and time
 func GenerateProcessGuid(pid int32, createTime int64) string {
-	inputString := fmt.Sprintf("%s-%d-%d", sysHostname, pid, createTime)
-	hashSum := sha256.Sum256([]byte(inputString))
-	return fmt.Sprintf("%x", hashSum)[:24]
+	raw := fmt.Sprintf("%s-%d-%d", sysHostname, pid, createTime)
+	sum := sha256.Sum256([]byte(raw))
+	return fmt.Sprintf("%x", sum)[:24]
 }
 
-// Writes an event to the local session log directory
 func WriteEvent(filename string, event interface{}) {
 	fileWriteLock.Lock()
 	defer fileWriteLock.Unlock()
 
-	err := os.MkdirAll(SessionDataDir, 0755)
-	if err != nil {
+	if err := os.MkdirAll(SessionDataDir, 0755); err != nil {
 		return
 	}
 
-	filePath := filepath.Join(SessionDataDir, filename)
-	file, err := os.OpenFile(filePath, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
+	file, err := os.OpenFile(filepath.Join(SessionDataDir, filename), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0666)
 	if err != nil {
 		return
 	}
 	defer file.Close()
 
-	encoder := json.NewEncoder(file)
-	err = encoder.Encode(event)
-	if err != nil {
-		return
-	}
+	_ = json.NewEncoder(file).Encode(event)
 }
 
-// Downloads public intelligence databases
 func DownloadFileAsset(targetPath string, url string) error {
-	_, err := os.Stat(targetPath)
-	if err == nil {
+	if _, err := os.Stat(targetPath); err == nil {
 		return nil
 	}
 
-	err = os.MkdirAll(filepath.Dir(targetPath), 0755)
-	if err != nil {
+	if err := os.MkdirAll(filepath.Dir(targetPath), 0755); err != nil {
 		return err
 	}
 
-	client := &http.Client{
-		Timeout: 30 * time.Second,
-	}
-
+	client := &http.Client{Timeout: 30 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
 		return err
@@ -273,14 +239,9 @@ func DownloadFileAsset(targetPath string, url string) error {
 	defer out.Close()
 
 	_, err = io.Copy(out, resp.Body)
-	if err != nil {
-		return err
-	}
-
-	return nil
+	return err
 }
 
-// Loads cloud CIDR ranges into memory
 func LoadNetworkRanges(path string) {
 	file, err := os.Open(path)
 	if err != nil {
@@ -294,24 +255,19 @@ func LoadNetworkRanges(path string) {
 
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
-		if line == "" {
-			continue
-		}
-		if strings.HasPrefix(line, "#") {
+		if line == "" || strings.HasPrefix(line, "#") {
 			continue
 		}
 
-		_, ipNet, err := net.ParseCIDR(line)
-		if err == nil && ipNet != nil {
+		if _, ipNet, err := net.ParseCIDR(line); err == nil && ipNet != nil {
 			cloudCidrNetworks = append(cloudCidrNetworks, *ipNet)
 		}
 	}
 }
 
-// Verifies if remote IP belongs to known CDNs or datacenters
 func CheckIPAgainstCloudRanges(ipStr string) bool {
-	parsedIP := net.ParseIP(ipStr)
-	if parsedIP == nil {
+	ip := net.ParseIP(ipStr)
+	if ip == nil {
 		return false
 	}
 
@@ -319,7 +275,7 @@ func CheckIPAgainstCloudRanges(ipStr string) bool {
 	defer networkCidrLock.RUnlock()
 
 	for _, network := range cloudCidrNetworks {
-		if network.Contains(parsedIP) {
+		if network.Contains(ip) {
 			return true
 		}
 	}
@@ -327,7 +283,6 @@ func CheckIPAgainstCloudRanges(ipStr string) bool {
 	return false
 }
 
-// Checks distance to verified datacenter coordinates
 func IsNearDataCenter(lat, lon float64, city, country string) (bool, string) {
 	datacenterLock.RLock()
 	defer datacenterLock.RUnlock()
@@ -343,11 +298,11 @@ func IsNearDataCenter(lat, lon float64, city, country string) (bool, string) {
 		}
 
 		if len(dc.CityCoords) == 2 && lat != 0 && lon != 0 {
-			targetLat := dc.CityCoords[0]
-			targetLon := dc.CityCoords[1]
+			dcLat := dc.CityCoords[0]
+			dcLon := dc.CityCoords[1]
 
-			distance := math.Sqrt(math.Pow(lat-targetLat, 2) + math.Pow(lon-targetLon, 2))
-			if distance < 0.3 {
+			dist := math.Sqrt(math.Pow(lat-dcLat, 2) + math.Pow(lon-dcLon, 2))
+			if dist < 0.3 {
 				return true, fmt.Sprintf("%s (%s)", dc.Name, dc.Company)
 			}
 		}
@@ -356,35 +311,30 @@ func IsNearDataCenter(lat, lon float64, city, country string) (bool, string) {
 	return false, ""
 }
 
-// Scores risk flags based on directory, name, and connection counts
 func EvaluateThreatVitals(p *process.Process, path, username, name string) (int, []string) {
 	var reasons []string
 	score := 0
 	lowerPath := strings.ToLower(path)
 	lowerName := strings.ToLower(name)
 
-	// Check for shell execution
 	if strings.Contains(lowerName, "powershell") || strings.Contains(lowerName, "cmd.exe") || strings.Contains(lowerName, "wscript") || strings.Contains(lowerName, "mshta") {
 		reasons = append(reasons, "Shell Execution")
-		score = score + 25
+		score += 25
 	}
 
-	// Check execution paths
 	if strings.Contains(lowerPath, "\\appdata\\local\\temp") || strings.Contains(lowerPath, "\\windows\\temp") {
 		reasons = append(reasons, "Executed from Temp")
-		score = score + 20
+		score += 20
 	}
 	if strings.Contains(lowerPath, "\\users\\") && strings.Contains(lowerPath, "\\downloads\\") {
 		reasons = append(reasons, "Executed from Downloads")
-		score = score + 15
+		score += 15
 	}
 
-	// Check for connection count anomaly
-	connections, err := p.Connections()
-	if err == nil {
+	if connections, err := p.Connections(); err == nil {
 		if len(connections) > 15 {
 			reasons = append(reasons, "High Network Volume")
-			score = score + 20
+			score += 20
 		}
 	}
 
@@ -561,8 +511,7 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 			Lon     float64 `json:"lon"`
 		}
 
-		err = json.NewDecoder(resp.Body).Decode(&result)
-		if err != nil {
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 			return
 		}
 
@@ -586,12 +535,9 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 
 			WriteEvent(GeoLog, geoData)
 
-			// IP Reputation Query ThreatFox
-			ok, threatDetails := QueryThreatFoxIOC(normalizedIP)
-			if ok {
+			if ok, threatDetails := QueryThreatFoxIOC(normalizedIP); ok {
 				processCacheLock.Lock()
-				procData, exists := activeProcessCache[guid]
-				if exists {
+				if procData, exists := activeProcessCache[guid]; exists {
 					procData.RiskScore = 100
 					procData.RiskReasons = append(procData.RiskReasons, threatDetails)
 					WriteEvent(ProcessLog, Event{
@@ -603,26 +549,23 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 				processCacheLock.Unlock()
 			}
 
-			// Validate IP boundaries against Cloud networks
-			isCloudIP := CheckIPAgainstCloudRanges(normalizedIP)
-			if !isCloudIP {
+			if !CheckIPAgainstCloudRanges(normalizedIP) {
 				processCacheLock.Lock()
-				procData, exists := activeProcessCache[guid]
-				if exists {
-					procData.RiskScore = procData.RiskScore + 15
+				if procData, exists := activeProcessCache[guid]; exists {
+					procData.RiskScore += 15
 					if procData.RiskScore > 100 {
 						procData.RiskScore = 100
 					}
 
-					hasHomeIPFlag := false
+					hasFlag := false
 					for _, reason := range procData.RiskReasons {
 						if reason == "Residential/Home Network Target" {
-							hasHomeIPFlag = true
+							hasFlag = true
 							break
 						}
 					}
 
-					if !hasHomeIPFlag {
+					if !hasFlag {
 						procData.RiskReasons = append(procData.RiskReasons, "Residential/Home Network Target")
 						WriteEvent(ProcessLog, Event{
 							Timestamp: time.Now().Format(time.RFC3339),
@@ -637,18 +580,17 @@ func GeolocateRemoteIP(ip string, pid int32, guid string) {
 	}()
 }
 
-// Maps connection statuses to direction, state, and version fields
 func ParseSocketProperties(conn psnet.ConnectionStat, guid string) Socket {
 	socket := Socket{
-		Guid:            guid,
-		Pid:             conn.Pid,
-		LocalIp:         conn.Laddr.IP,
-		LocalPort:       conn.Laddr.Port,
-		RemoteIp:        conn.Raddr.IP,
-		RemotePort:      conn.Raddr.Port,
-		State:           conn.Status,
-		IsLoopback:      false,
-		Hostname:        GetHostname(conn.Raddr.IP),
+		Guid:       guid,
+		Pid:        conn.Pid,
+		LocalIp:    conn.Laddr.IP,
+		LocalPort:  conn.Laddr.Port,
+		RemoteIp:   conn.Raddr.IP,
+		RemotePort: conn.Raddr.Port,
+		State:      conn.Status,
+		IsLoopback: false,
+		Hostname:   GetHostname(conn.Raddr.IP),
 	}
 
 	if conn.Type == 1 {
@@ -676,7 +618,6 @@ func ParseSocketProperties(conn psnet.ConnectionStat, guid string) Socket {
 	return socket
 }
 
-// Registers processes and returns their unique GUID
 func RegisterRunningProcess(pid int32) string {
 	if pid <= 0 {
 		return "SYSTEM-PROCESS"
@@ -737,20 +678,16 @@ func RegisterRunningProcess(pid int32) string {
 	return guid
 }
 
-// Starts the scanner service loop
 func StartBackgroundService() {
 	isInitialRun := true
-	hostname, err := os.Hostname()
-	if err == nil {
+	if hostname, err := os.Hostname(); err == nil {
 		sysHostname = hostname
 	}
 
 	SessionDataDir = filepath.Join("data", time.Now().Format("20060102_150405"))
 
-	// Fetch hash blacklist database
 	_ = DownloadFileAsset(MaliciousDbFile, "https://raw.githubusercontent.com/romainmarcoux/malicious-hash/refs/heads/main/full-hash-sha256-aa.txt")
-	dbFile, err := os.Open(MaliciousDbFile)
-	if err == nil {
+	if dbFile, err := os.Open(MaliciousDbFile); err == nil {
 		scanner := bufio.NewScanner(dbFile)
 		blacklistLock.Lock()
 		for scanner.Scan() {
@@ -763,13 +700,10 @@ func StartBackgroundService() {
 		dbFile.Close()
 	}
 
-	// Fetch cloud datacenters
 	_ = DownloadFileAsset(DataCenterDbFile, "https://raw.githubusercontent.com/Ringmast4r/Global-Data-Center-Map/refs/heads/main/datacenters.json")
-	dcFile, err := os.Open(DataCenterDbFile)
-	if err == nil {
+	if dcFile, err := os.Open(DataCenterDbFile); err == nil {
 		var records []Datacenter
-		err = json.NewDecoder(dcFile).Decode(&records)
-		if err == nil {
+		if err := json.NewDecoder(dcFile).Decode(&records); err == nil {
 			datacenterLock.Lock()
 			datacentersCatalog = records
 			datacenterLock.Unlock()
@@ -777,7 +711,6 @@ func StartBackgroundService() {
 		dcFile.Close()
 	}
 
-	// Fetch cloud CIDR ranges
 	_ = DownloadFileAsset(IPv4RangesFile, "https://raw.githubusercontent.com/lord-alfred/ipranges/main/all/ipv4_merged.txt")
 	_ = DownloadFileAsset(IPv6RangesFile, "https://raw.githubusercontent.com/lord-alfred/ipranges/main/all/ipv6_merged.txt")
 	LoadNetworkRanges(IPv4RangesFile)
@@ -811,8 +744,7 @@ func StartBackgroundService() {
 				AuditChildProcesses(conn.Pid, processGuid)
 			}
 
-			_, exists := socketRegistry[socketKey]
-			if !exists {
+			if _, exists := socketRegistry[socketKey]; !exists {
 				socketRegistry[socketKey] = socketProperties
 				socketReferenceCount[conn.Pid]++
 
@@ -826,7 +758,6 @@ func StartBackgroundService() {
 			}
 		}
 
-		// Handle socket closure events
 		for key, trackedSocket := range socketRegistry {
 			if !activeSocketsNow[key] {
 				if !isInitialRun {
@@ -843,8 +774,7 @@ func StartBackgroundService() {
 					delete(socketReferenceCount, trackedSocket.Pid)
 
 					processCacheLock.Lock()
-					procRecord, exists := activeProcessCache[trackedSocket.Guid]
-					if exists {
+					if procRecord, exists := activeProcessCache[trackedSocket.Guid]; exists {
 						if !isInitialRun {
 							WriteEvent(ProcessLog, Event{
 								Timestamp: time.Now().Format(time.RFC3339),

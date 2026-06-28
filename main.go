@@ -3,40 +3,28 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 )
 
 func main() {
-	argumentString := ""
-	argumentCount := len(os.Args)
-	
-	if argumentCount > 1 {
-		argumentString = os.Args[1]
+	cmd := ""
+	if len(os.Args) > 1 {
+		cmd = os.Args[1]
 	}
 
-	switch argumentString {
+	switch cmd {
 	case "scan":
-		fmt.Println("Starting scanner background service...")
+		fmt.Println("Starting background scanner...")
 		StartBackgroundService()
-		
-	case "", "server":
-		defaultPortAddress := ":8080"
-		StartServer(defaultPortAddress)
-		
-	default:
-		argumentLength := len(argumentString)
-		isCustomPort := false
-		
-		if argumentLength > 0 {
-			firstCharacter := argumentString[0]
-			if firstCharacter == ':' {
-				isCustomPort = true
-			}
-		}
 
-		if isCustomPort {
-			StartServer(argumentString)
+	case "", "server":
+		StartServer(":8080")
+
+	default:
+		if strings.HasPrefix(cmd, ":") {
+			StartServer(cmd)
 		} else {
-			fmt.Fprintf(os.Stderr, "Usage command format: %s [scan | server | :PORT]\n", os.Args[0])
+			fmt.Fprintf(os.Stderr, "Usage: %s [scan | server | :PORT]\n", os.Args[0])
 			os.Exit(1)
 		}
 	}
