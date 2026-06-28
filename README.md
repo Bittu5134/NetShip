@@ -1,109 +1,111 @@
-<div align="center">
+# NetShip EDR
 
-# NetShip
-
-### A host network monitoring and security auditing tool.
-
-</div>
-
-NetShip is a local host monitoring utility that tracks socket connections, profiles process lifecycles, and logs threat telemetry. It provides an embedded web dashboard for real-time traffic analysis, process lineage tree visualization, and system state comparison.
+NetShip is a local host monitoring utility and security auditing tool. It captures socket activity, profiles process lifecycles, and correlates real-time telemetry to flag suspicious behavior. NetShip embeds a dark-mode web dashboard featuring live geospatial traffic mapping, process lineage trees, port analytics, and historic session drift comparison.
 
 ---
 
-## Features
+## Technical Features
 
-* **Network Tracking:** Logs active TCP/UDP sockets (IPv4/IPv6) with local and remote endpoints, directionality, and connection states.
-* **Process Profiling:** Tracks process registry events, parent-child execution lineages, execution paths, and command-line arguments.
-* **Threat Auditing:** Computes SHA256 hashes of running binaries to check against local malware databases, queries the public **ThreatFox (Abuse.ch)** API for malicious IOC hashes/IPs in real-time, and flags threat warnings based on execution vitals.
-* **IP Geolocation & Domain Resolution:** Resolves external target IPs to geographic coordinates, ISP/carriers, and runs reverse DNS domain host queries to display connection pathways.
-* **Intelligence Lookup & Export:** Features interactive detail actions to lookup processes on Google, scan hashes on VirusTotal, query IPs on IPInfo, and export telemetries directly to CSV tables.
-
----
-
-## Dashboard Views
-
-The web dashboard is served directly from the application and contains:
-
-* **Overview:** Cumulative threat gauge showing current system status, statistics, and a recent alerts ledger.
-* **Analytics:** Flicker-free connection timelines, protocol ratios (TCP vs. UDP), port distributions, and process churn charts.
-* **Network Map:** Geospatial mapping of outbound IP targets relative to global datacenter nodes.
-* **Process Tree:** Lineage relation cards illustrating parent-to-child process spawning dependencies.
-* **Sessions & Diff Matrix:** Historic session explorer and comparison tool to analyze process drift between two runs.
+* **Real-Time Network Telemetry:** Polls active TCP/UDP sockets (IPv4 and IPv6) capturing state transitions, local/remote endpoints, and connection directionality.
+* **Process Lineage Profiling:** Maps process lifecycles, child execution dependencies, execution paths, execution vital signs, and user contexts.
+* **Threat Feed Correlator:** Audits active binaries using SHA256 hashing. Hashes are cross-referenced with a local malicious signature database and matched dynamically against the public **ThreatFox (Abuse.ch)** API.
+* **Geospatial Mapping & Cloud Detection:** Geolocates outbound IP targets relative to datacenter catalogs and checks external traffic routes against known cloud CIDR blocks.
+* **Reverse DNS Resolution:** Automatically resolves target IPs to reverse DNS hostname profiles.
+* **Data Exporters:** Supports CSV table exports for network telemetry, processes lifecycle tables, and file signature hashes directly from the UI.
 
 ---
 
-## Setup & Running
+## Dashboard Anatomy
+
+### 📊 Overview
+A real-time system threat gauge displaying cumulative risk metrics and a security alerts ledger.
+![Overview](.github/assets/overview.png)
+
+### 📈 Analytics
+Visual connection timelines, port distributions, protocol ratios, and process execution churn charts.
+![Analytics](.github/assets/analytics.png)
+
+### 🗺️ Network Map
+A geospatial Leaflet-based visualization connecting active socket endpoints to datacenter profiles.
+![Network Map](.github/assets/network_map.png)
+
+### 🌿 Process Tree
+Relational node trees illustrating parent-child process dependencies (e.g. shells spawned from system services).
+![Process Tree](.github/assets/process_tree.png)
+
+### 🌐 Network Events
+Logs socket lifecycle transitions and network connections.
+![Network Events](.github/assets/network_events.png)
+
+### ⚙️ Processes
+Logs process registry states and threat alerts.
+![Processes](.github/assets/processes.png)
+
+### 🔑 File Hashes
+Stores computed hash audit results and local malware database check details.
+![File Hashes](.github/assets/file_hashes.png)
+
+### 📂 Sessions & Diff Matrix
+Historical scan log database with a side-by-side session comparison tool to isolate process drift between different runs.
+
+---
+
+## Getting Started
 
 ### Prerequisites
 
 * Go 1.26 or higher
-* Internet connection (on initial scan to fetch updated cloud CIDRs and threat databases)
+* Active internet connection (on initial scan to retrieve threat signatures and cloud CIDR datasets)
 
-### Instructions
+### Installation & Run
 
-1. **Download dependencies:**
+1. **Get dependencies:**
    ```bash
    go mod download
    ```
 
-2. **Build the binary:**
+2. **Build NetShip:**
    ```bash
    go build -o NetShip.exe .
    ```
 
-3. **Start the server:**
+3. **Run the Dashboard:**
    ```bash
    ./NetShip.exe server
    ```
-   Open **[http://localhost:8080](http://localhost:8080)** in your browser to view the interface.
+   Open `http://localhost:8080` in your web browser.
 
 ---
 
-## Command Line Usage
+## CLI Options
 
-Configure execution mode using arguments:
-
-| Argument | Example | Description |
+| Option / Arg | Example | Description |
 | :--- | :--- | :--- |
-| `server` | `NetShip.exe server` | Runs the HTTP web portal (default port: `:8080`). |
-| `scan` | `NetShip.exe scan` | Starts the background monitoring scanner process directly. |
-| `:PORT` | `NetShip.exe :9090` | Runs the HTTP web portal on a custom port. |
+| `server` | `NetShip.exe server` | Starts HTTP API server and web portal (default port: `:8080`). |
+| `scan` | `NetShip.exe scan` | Launches background process & network telemetry loop directly. |
+| `:PORT` | `NetShip.exe :9090` | Starts the server on a custom port address. |
 
 ---
 
-## API Reference
+## Telemetry Layout
 
-The dashboard communicates with the backend via the following HTTP endpoints:
+### Historic Session Logs
+Telemetry is serialized into JSON Lines (JSONL) format in the `data/` subdirectory, grouped by timestamp session ID (`data/<YYYYMMDD_HHMMSS>/`):
+* `network.jsonl`: Captures socket state logs (`OPEN`, `CLOSED`).
+* `processes.jsonl`: Logs process startup events and computed risk evaluations.
+* `children.jsonl`: Captures parent-to-child lineage relationships.
+* `geolocation.jsonl`: Stores resolved IP coordinates and carrier ISPs.
+* `threat_hashes.jsonl`: Saves binary hash signature status evaluations.
 
-| Endpoint | Method | Description |
-| :--- | :--- | :--- |
-| `/api/status` | `GET` | Returns scanning state and active session ID. |
-| `/api/scan/start` | `POST` | Spawns the background scanner process. |
-| `/api/scan/stop` | `POST` | Terminates the running scanner process. |
-| `/api/live/<channel>` | `GET` | Pulls live records (`network`, `process`, `children`, `geo`, `hashes`). |
-| `/api/sessions` | `GET` | Lists all historical scan session records. |
-| `/api/session/<id>/<channel>` | `GET` | Fetches historical log lines for a specific session ID and data channel. |
-
----
-
-## Data Layout
-
-### Local Logs
-All logs are written in JSON Lines (JSONL) format under `data/<session_timestamp>/`:
-* `network.jsonl`: Logs socket lifecycle transitions.
-* `processes.jsonl`: Logs process registry states and alerts.
-* `children.jsonl`: Logs process parentage relationships.
-* `geolocation.jsonl`: Caches resolved IP geolocations.
-* `threat_hashes.jsonl`: Stores computed hash audit results.
-
-### Resource Databases
-Datasets downloaded and cached under the `resources/` folder on startup:
-* `malicious_hashes.txt`: Database of known bad binary signatures.
-* `datacenters.json`: Public records of major cloud service provider zones.
-* `ipv4_merged.txt` / `ipv6_merged.txt`: Consolidated cloud CIDR lists.
+### Resource Feeds
+Fetched and cached in the `resources/` subdirectory on first boot:
+* `malicious_hashes.txt`: Local malware signature database.
+* `datacenters.json`: Global cloud service provider datacenter profile database.
+* `ipv4_merged.txt` / `ipv6_merged.txt`: Aggregated cloud provider CIDR blocks.
 
 ---
 
 ## License
 
-This project is licensed under the MIT License.
+NetShip is released under the MIT License.
+
