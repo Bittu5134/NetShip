@@ -1,4 +1,3 @@
-// Master state registry
 let state = {
   mode: "offline",
   sessionId: null,
@@ -28,194 +27,152 @@ async function init() {
   setupSorting();
   
   await updateState();
-  
-  // Fetch updates periodically
-  setInterval(async function() {
-    await updateState();
-  }, 3000);
+  setInterval(updateState, 3000);
 }
 
-// Check scanning status and update banners
 async function updateState() {
-  const statusResp = await fetch("/api/status").then(function(r) {
-    return r.json();
-  }).catch(function() {
-    return null;
-  });
-  
-  if (statusResp === null) {
-    return;
-  }
-
-  const banner = document.getElementById("status-banner");
-  const pulse = document.getElementById("engine-pulse");
-
-  if (statusResp.running) {
-    state.mode = "live";
-    state.sessionId = statusResp.session_dir;
-    banner.className = "status-banner live";
-    banner.innerText = "LIVE SCAN: " + state.sessionId;
+  try {
+    const res = await fetch("/api/status");
+    if (!res.ok) return;
+    const status = await res.json();
     
-    if (pulse !== null) {
-      pulse.classList.remove("idle");
-      pulse.classList.add("live");
-    }
-  } else if (state.mode !== "history") {
-    state.mode = "offline";
-    banner.className = "status-banner offline";
-    banner.innerText = "SYSTEM IDLE";
-    
-    if (pulse !== null) {
-      pulse.classList.remove("live");
-      pulse.classList.add("idle");
-    }
-  } else {
-    banner.className = "status-banner history";
-    banner.innerText = "HISTORY LOG: " + state.sessionId;
-    
-    if (pulse !== null) {
-      pulse.classList.remove("live");
-      pulse.classList.add("idle");
-    }
-  }
+    const banner = document.getElementById("status-banner");
+    const pulse = document.getElementById("engine-pulse");
 
-  if (state.mode !== "offline") {
-    await fetchTelemetry();
-  }
-  
-  const historyPanel = document.getElementById("panel-history");
-  if (historyPanel.classList.contains("active")) {
-    await populateHistory();
+    if (status.running) {
+      state.mode = "live";
+      state.sessionId = status.session_dir;
+      banner.className = "status-banner live";
+      banner.innerText = `LIVE SCAN: ${state.sessionId}`;
+      
+      if (pulse) {
+        pulse.classList.remove("idle");
+        pulse.classList.add("live");
+      }
+    } else if (state.mode !== "history") {
+      state.mode = "offline";
+      banner.className = "status-banner offline";
+      banner.innerText = "SYSTEM IDLE";
+      
+      if (pulse) {
+        pulse.classList.remove("live");
+        pulse.classList.add("idle");
+      }
+    } else {
+      banner.className = "status-banner history";
+      banner.innerText = `HISTORY LOG: ${state.sessionId}`;
+      
+      if (pulse) {
+        pulse.classList.remove("live");
+        pulse.classList.add("idle");
+      }
+    }
+
+    if (state.mode !== "offline") {
+      await fetchTelemetry();
+    }
+    
+    const historyPanel = document.getElementById("panel-history");
+    if (historyPanel && historyPanel.classList.contains("active")) {
+      await populateHistory();
+    }
+  } catch (err) {
+    console.error("Failed to update status state:", err);
   }
 }
 
-// Fetch session log rows
 async function fetchTelemetry() {
-  let baseAddress = "";
-  if (state.mode === "live") {
-    baseAddress = "/api/live/";
-  } else {
-    baseAddress = "/api/session/" + state.sessionId + "/";
-  }
+  const base = state.mode === "live" ? "/api/live/" : `/api/session/${state.sessionId}/`;
   
   try {
-    const netData = await fetch(baseAddress + "network").then(function(r) { return r.json(); });
-    const procData = await fetch(baseAddress + "process").then(function(r) { return r.json(); });
-    const hashData = await fetch(baseAddress + "hashes").then(function(r) { return r.json(); });
-    const childData = await fetch(baseAddress + "children").then(function(r) { return r.json(); });
-    const geoData = await fetch(baseAddress + "geo").then(function(r) { return r.json(); });
+    const [net, proc, hash, child, geo] = await Promise.all([
+      fetch(`${base}network`).then(r => r.json()),
+      fetch(`${base}process`).then(r => r.json()),
+      fetch(`${base}hashes`).then(r => r.json()),
+      fetch(`${base}children`).then(r => r.json()),
+      fetch(`${base}geo`).then(r => r.json())
+    ]);
 
-    state.data.network = netData || [];
-    state.data.processes = procData || [];
-    state.data.hashes = hashData || [];
-    state.data.children = childData || [];
-    state.data.geo = geoData || [];
+    state.data.network = net || [];
+    state.data.processes = proc || [];
+    state.data.hashes = hash || [];
+    state.data.children = child || [];
+    state.data.geo = geo || [];
     
-    const searchInput = document.getElementById("global-search");
-    const searchQuery = searchInput.value.toLowerCase();
-    
-    if (searchQuery.length > 1) {
-      // Filter logic searching matching keys
-      const filterFunction = function(item) {
-        const itemString = JSON.stringify(item).toLowerCase();
-        const containsMatch = itemString.includes(searchQuery);
-        return containsMatch;
-      };
-      
-      const filteredData = {
-        network: state.data.network.filter(filterFunction),
-        processes: state.data.processes.filter(filterFunction),
-        hashes: state.data.hashes.filter(filterFunction),
+    const query = document.getElementById("global-search").value.toLowerCase();
+    if (query.length > 1) {
+      const match = item => JSON.stringify(item).toLowerCase().includes(query);
+      renderAllDashboards({
+        network: state.data.network.filter(match),
+        processes: state.data.processes.filter(match),
+        hashes: state.data.hashes.filter(match),
         children: state.data.children,
         geo: state.data.geo
-      };
-      
-      renderAllDashboards(filteredData);
+      });
     } else {
       renderAllDashboards(state.data);
     }
-  } catch(e) { 
-    console.error("Telemetry fetch operation failed", e); 
+  } catch (err) { 
+    console.error("Telemetry fetch failed:", err); 
   }
 }
 
-// Handle global search input change
-document.getElementById("global-search").addEventListener("input", function() {
+document.getElementById("global-search").addEventListener("input", () => {
   if (state.mode !== "offline") {
     fetchTelemetry();
   }
 });
 
-// Triggers active views redrawing
 function renderAllDashboards(data) {
   renderOverview(data);
   renderTables(data);
   
-  const analyticsPanel = document.getElementById("panel-analytics");
-  if (analyticsPanel.classList.contains("active")) {
+  if (document.getElementById("panel-analytics").classList.contains("active")) {
     renderCharts(data);
   }
-  
-  const treePanel = document.getElementById("panel-tree");
-  if (treePanel.classList.contains("active")) {
+  if (document.getElementById("panel-tree").classList.contains("active")) {
     renderProcessTree(data);
   }
-  
-  const mapPanel = document.getElementById("panel-map");
-  if (mapPanel.classList.contains("active")) {
+  if (document.getElementById("panel-map").classList.contains("active")) {
     renderMap(data.geo);
   }
 }
 
-// Generate overview statistics metrics and dynamic threat status indicator
 function renderOverview(data) {
-  // Count running actions
-  let runningProcessCount = 0;
-  for (let i = 0; i < data.processes.length; i++) {
-    const action = data.processes[i].action;
-    if (action === "START" || action === "PROC_START") {
-      runningProcessCount = runningProcessCount + 1;
-    }
-  }
+  const activeProcesses = data.processes.filter(p => p.action === "START" || p.action === "PROC_START").length;
   
-  document.getElementById("count-proc").innerText = runningProcessCount;
+  document.getElementById("count-proc").innerText = activeProcesses;
   document.getElementById("count-net").innerText = data.network.length;
   document.getElementById("count-hash").innerText = data.hashes.length;
   
-  let cumulativeRiskScore = 0;
-  let alertRecords = [];
+  let riskScore = 0;
+  const alerts = [];
   
-  for (let i = 0; i < data.processes.length; i++) {
-    const item = data.processes[i];
+  data.processes.forEach(item => {
     if (item.process) {
-      const riskScore = item.process.risk_score || 0;
-      cumulativeRiskScore = cumulativeRiskScore + riskScore;
-      
-      const reasonsList = item.process.risk_reasons || [];
-      if (riskScore > 20 || reasonsList.length > 0) {
-        alertRecords.push(item);
+      const score = item.process.risk_score || 0;
+      riskScore += score;
+      if (score > 20 || (item.process.risk_reasons && item.process.risk_reasons.length > 0)) {
+        alerts.push(item);
       }
     }
-  }
+  });
   
-  document.getElementById("count-threat").innerText = cumulativeRiskScore;
+  document.getElementById("count-threat").innerText = riskScore;
   
-  // Calculate dynamic status gauge values
   const gaugeFill = document.getElementById("gauge-fill");
   const gaugeStatusText = document.getElementById("gauge-status-text");
   const gaugeScoreVal = document.getElementById("gauge-score-val");
   
-  if (gaugeFill !== null && gaugeStatusText !== null && gaugeScoreVal !== null) {
-    const maxReferencePoints = 250;
-    const computedPercentage = Math.min((cumulativeRiskScore / maxReferencePoints) * 100, 100);
+  if (gaugeFill && gaugeStatusText && gaugeScoreVal) {
+    const pct = Math.min((riskScore / 250) * 100, 100);
+    gaugeFill.style.width = `${pct}%`;
+    gaugeScoreVal.innerText = `Cumulative Score: ${riskScore}`;
     
-    gaugeFill.style.width = computedPercentage + "%";
-    gaugeScoreVal.innerText = "Cumulative Score: " + cumulativeRiskScore;
-    
-    if (cumulativeRiskScore === 0) {
+    if (riskScore === 0) {
       gaugeStatusText.innerText = "SYSTEM STATUS: SAFE";
       gaugeStatusText.style.color = "var(--success)";
-    } else if (cumulativeRiskScore < 100) {
+    } else if (riskScore < 100) {
       gaugeStatusText.innerText = "SYSTEM STATUS: DEVIATIONS DETECTED";
       gaugeStatusText.style.color = "var(--warn)";
     } else {
@@ -224,130 +181,67 @@ function renderOverview(data) {
     }
   }
   
-  let alertsHtml = "";
-  const slicedAlerts = alertRecords.slice(-10).reverse();
-  
-  for (let i = 0; i < slicedAlerts.length; i++) {
-    const alertItem = slicedAlerts[i];
-    const proc = alertItem.process;
+  const alertsHtml = alerts.slice(-10).reverse().map(item => {
+    const proc = item.process;
     const reasons = proc.risk_reasons || [];
-    const formattedString = JSON.stringify(alertItem);
-    
-    alertsHtml = alertsHtml + `
-      <tr onclick='openDrawer("Alert Details", ${formattedString})'>
-        <td>${fmtTime(alertItem.timestamp)}</td>
+    return `
+      <tr onclick='openDrawer("Alert Details", ${JSON.stringify(item)})'>
+        <td>${fmtTime(item.timestamp)}</td>
         <td style="color:var(--neon)">${proc.name}</td>
         <td style="color:var(--alert)">${proc.risk_score}</td>
         <td>${reasons.join(", ")}</td>
       </tr>
     `;
-  }
-  
-  if (alertsHtml === "") {
-    alertsHtml = "<tr><td colspan='4'>No active alerts.</td></tr>";
-  }
+  }).join("") || "<tr><td colspan='4'>No active alerts.</td></tr>";
   
   document.getElementById("table-alerts").innerHTML = alertsHtml;
 }
 
-// Enable sorting headers listeners
 function setupSorting() {
-  const headers = document.querySelectorAll('th.sortable');
-  for (let i = 0; i < headers.length; i++) {
-    const th = headers[i];
-    th.addEventListener('click', function() {
+  document.querySelectorAll('th.sortable').forEach(th => {
+    th.addEventListener('click', () => {
       const col = th.dataset.sort;
       if (state.sort.column === col) {
-        if (state.sort.dir === 'asc') {
-          state.sort.dir = 'desc';
-        } else {
-          state.sort.dir = 'asc';
-        }
+        state.sort.dir = state.sort.dir === 'asc' ? 'desc' : 'asc';
       } else {
         state.sort.column = col;
         state.sort.dir = 'desc';
       }
       
-      const allHeaders = document.querySelectorAll('th.sortable');
-      for (let j = 0; j < allHeaders.length; j++) {
-        allHeaders[j].classList.remove('sort-asc', 'sort-desc');
-      }
-      
-      if (state.sort.dir === 'asc') {
-        th.classList.add('sort-asc');
-      } else {
-        th.classList.add('sort-desc');
-      }
-      
+      document.querySelectorAll('th.sortable').forEach(h => h.classList.remove('sort-asc', 'sort-desc'));
+      th.classList.add(state.sort.dir === 'asc' ? 'sort-asc' : 'sort-desc');
       renderTables(state.data);
     });
-  }
+  });
 }
 
-// Basic data array sorter
 function sortData(array, getValueFn) {
-  const sortedArray = [...array];
-  sortedArray.sort(function(a, b) {
+  return [...array].sort((a, b) => {
     const valA = getValueFn(a);
     const valB = getValueFn(b);
-    
-    if (valA < valB) {
-      if (state.sort.dir === 'asc') {
-        return -1;
-      } else {
-        return 1;
-      }
-    }
-    if (valA > valB) {
-      if (state.sort.dir === 'asc') {
-        return 1;
-      } else {
-        return -1;
-      }
-    }
+    if (valA < valB) return state.sort.dir === 'asc' ? -1 : 1;
+    if (valA > valB) return state.sort.dir === 'asc' ? 1 : -1;
     return 0;
   });
-  return sortedArray;
 }
 
-// Draw network, processes, and signature log lists
 function renderTables(data) {
-  const sortedNetwork = sortData(data.network, function(item) {
-    const socket = item.socket || {};
-    if (state.sort.column === 'pid') {
-      return socket.pid || 0;
-    }
-    if (state.sort.column === 'local') {
-      return socket.local_port || 0;
-    }
-    if (state.sort.column === 'remote') {
-      return socket.remote_ip || '';
-    }
-    if (state.sort.column === 'status') {
-      return socket.state || '';
-    }
+  const sortedNetwork = sortData(data.network, item => {
+    const sock = item.socket || {};
+    if (state.sort.column === 'pid') return sock.pid || 0;
+    if (state.sort.column === 'local') return sock.local_port || 0;
+    if (state.sort.column === 'remote') return sock.remote_ip || '';
+    if (state.sort.column === 'status') return sock.state || '';
     return item.timestamp || '';
   });
   
-  let networkRowsHtml = "";
-  const slicedNetwork = sortedNetwork.slice(0, 100);
-  
-  for (let i = 0; i < slicedNetwork.length; i++) {
-    const item = slicedNetwork[i];
+  const networkRowsHtml = sortedNetwork.slice(0, 100).map(item => {
     const sock = item.socket || {};
-    const stringified = JSON.stringify(item);
-    
-    let remoteText = "-";
-    if (sock.remote_ip) {
-      if (sock.hostname) {
-        remoteText = sock.hostname + " (" + sock.remote_ip + ":" + sock.remote_port + ")";
-      } else {
-        remoteText = sock.remote_ip + ":" + sock.remote_port;
-      }
-    }
-    
-    networkRowsHtml = networkRowsHtml + `
-      <tr onclick='openDrawer("Network Event", ${stringified})'>
+    const remoteText = sock.remote_ip 
+      ? (sock.hostname ? `${sock.hostname} (${sock.remote_ip}:${sock.remote_port})` : `${sock.remote_ip}:${sock.remote_port}`)
+      : "-";
+    return `
+      <tr onclick='openDrawer("Network Event", ${JSON.stringify(item)})'>
         <td>${fmtTime(item.timestamp)}</td>
         <td>${sock.pid}</td>
         <td>${sock.local_ip}:${sock.local_port}</td>
@@ -355,40 +249,24 @@ function renderTables(data) {
         <td>${sock.state || '-'}</td>
       </tr>
     `;
-  }
+  }).join("");
   
   document.getElementById("table-network").innerHTML = networkRowsHtml;
 
-  const sortedProcesses = sortData(data.processes, function(item) {
+  const sortedProcesses = sortData(data.processes, item => {
     const proc = item.process || {};
-    if (state.sort.column === 'pid') {
-      return proc.pid || 0;
-    }
-    if (state.sort.column === 'name') {
-      return proc.name || '';
-    }
-    if (state.sort.column === 'score') {
-      return proc.risk_score || 0;
-    }
+    if (state.sort.column === 'pid') return proc.pid || 0;
+    if (state.sort.column === 'name') return proc.name || '';
+    if (state.sort.column === 'score') return proc.risk_score || 0;
     return item.timestamp || '';
   });
 
-  let processesRowsHtml = "";
-  const slicedProcesses = sortedProcesses.slice(0, 100);
-  
-  for (let i = 0; i < slicedProcesses.length; i++) {
-    const item = slicedProcesses[i];
+  const processesRowsHtml = sortedProcesses.slice(0, 100).map(item => {
     const proc = item.process || {};
-    const stringified = JSON.stringify(item);
     const reasons = proc.risk_reasons || [];
-    
-    let scoreColor = "var(--text)";
-    if (proc.risk_score > 0) {
-      scoreColor = "var(--alert)";
-    }
-    
-    processesRowsHtml = processesRowsHtml + `
-      <tr onclick='openDrawer("Process Details", ${stringified})'>
+    const scoreColor = proc.risk_score > 0 ? "var(--alert)" : "var(--text)";
+    return `
+      <tr onclick='openDrawer("Process Details", ${JSON.stringify(item)})'>
         <td>${fmtTime(item.timestamp)}</td>
         <td>${proc.pid}</td>
         <td style="color:var(--neon)">${proc.name}</td>
@@ -396,81 +274,54 @@ function renderTables(data) {
         <td>${reasons.join(", ")}</td>
       </tr>
     `;
-  }
+  }).join("");
   
   document.getElementById("table-processes").innerHTML = processesRowsHtml;
 
-  const sortedHashes = sortData(data.hashes, function(item) {
-    if (state.sort.column === 'name') {
-      return item.file_name || '';
-    }
-    if (state.sort.column === 'status') {
-      return item.status || '';
-    }
+  const sortedHashes = sortData(data.hashes, item => {
+    if (state.sort.column === 'name') return item.file_name || '';
+    if (state.sort.column === 'status') return item.status || '';
     return item.timestamp || '';
   });
 
-  let hashesRowsHtml = "";
-  const slicedHashes = sortedHashes.slice(0, 100);
-  
-  for (let i = 0; i < slicedHashes.length; i++) {
-    const item = slicedHashes[i];
-    const stringified = JSON.stringify(item);
-    
-    let statusColor = "var(--neon)";
-    if (item.status === "MALICIOUS") {
-      statusColor = "var(--alert)";
-    }
-    
-    hashesRowsHtml = hashesRowsHtml + `
-      <tr onclick='openDrawer("Hash Details", ${stringified})'>
+  const hashesRowsHtml = sortedHashes.slice(0, 100).map(item => {
+    const statusColor = item.status === "MALICIOUS" ? "var(--alert)" : "var(--neon)";
+    return `
+      <tr onclick='openDrawer("Hash Details", ${JSON.stringify(item)})'>
         <td>${fmtTime(item.timestamp)}</td>
         <td>${item.file_name}</td>
         <td>${item.sha256}</td>
         <td style="color:${statusColor}">${item.status}</td>
       </tr>
     `;
-  }
+  }).join("");
   
   document.getElementById("table-hashes").innerHTML = hashesRowsHtml;
 }
 
-// Side sliding metadata inspector
 function openDrawer(title, rawData) {
   document.getElementById("drawer-title").innerText = title;
   document.getElementById("drawer-json").innerText = JSON.stringify(rawData, null, 2);
   
   const actionsEl = document.getElementById("drawer-intel-actions");
-  if (actionsEl !== null) {
+  if (actionsEl) {
     actionsEl.innerHTML = "";
     
     if (rawData.sha256) {
-      actionsEl.innerHTML = actionsEl.innerHTML + `
-        <a href="https://www.virustotal.com/gui/file/${rawData.sha256}" target="_blank" class="intel-btn">🛡️ VirusTotal</a>
-      `;
+      actionsEl.innerHTML += `<a href="https://www.virustotal.com/gui/file/${rawData.sha256}" target="_blank" class="intel-btn">🛡️ VirusTotal</a>`;
     }
     
     if (rawData.process && rawData.process.name) {
-      const encodedName = encodeURIComponent(rawData.process.name);
-      actionsEl.innerHTML = actionsEl.innerHTML + `
-        <a href="https://www.google.com/search?q=${encodedName}+process+security" target="_blank" class="intel-btn">🔍 Search Info</a>
-      `;
+      actionsEl.innerHTML += `<a href="https://www.google.com/search?q=${encodeURIComponent(rawData.process.name)}+process+security" target="_blank" class="intel-btn">🔍 Search Info</a>`;
     } else if (rawData.child_name) {
-      const encodedName = encodeURIComponent(rawData.child_name);
-      actionsEl.innerHTML = actionsEl.innerHTML + `
-        <a href="https://www.google.com/search?q=${encodedName}+process+security" target="_blank" class="intel-btn">🔍 Search Info</a>
-      `;
+      actionsEl.innerHTML += `<a href="https://www.google.com/search?q=${encodeURIComponent(rawData.child_name)}+process+security" target="_blank" class="intel-btn">🔍 Search Info</a>`;
     }
     
     const socketObj = rawData.socket || rawData.connection || {};
     if (socketObj.remote_ip && socketObj.remote_ip !== "127.0.0.1" && socketObj.remote_ip !== "::1") {
-      actionsEl.innerHTML = actionsEl.innerHTML + `
-        <a href="https://ipinfo.io/${socketObj.remote_ip}" target="_blank" class="intel-btn">🌐 IPInfo Lookup</a>
-      `;
+      actionsEl.innerHTML += `<a href="https://ipinfo.io/${socketObj.remote_ip}" target="_blank" class="intel-btn">🌐 IPInfo Lookup</a>`;
     } else if (rawData.ip && rawData.ip !== "127.0.0.1" && rawData.ip !== "::1") {
-      actionsEl.innerHTML = actionsEl.innerHTML + `
-        <a href="https://ipinfo.io/${rawData.ip}" target="_blank" class="intel-btn">🌐 IPInfo Lookup</a>
-      `;
+      actionsEl.innerHTML += `<a href="https://ipinfo.io/${rawData.ip}" target="_blank" class="intel-btn">🌐 IPInfo Lookup</a>`;
     }
   }
 
@@ -944,48 +795,36 @@ function renderProcessTree(data) {
   container.innerHTML = html;
 }
 
-// Load historical runs list
 async function populateHistory() {
-  const sessions = await fetch("/api/sessions").then(function(r) {
-    return r.json();
-  }).catch(function() {
-    return [];
-  });
-  
-  let historyRowsHtml = "";
-  for (let i = 0; i < sessions.length; i++) {
-    const item = sessions[i];
-    const totalLogs = item.network_count + item.process_count;
-    const dateFormatted = new Date(item.started_at).toLocaleString();
-    
-    historyRowsHtml = historyRowsHtml + `
-      <tr onclick="state.mode='history'; state.sessionId='${item.id}'; updateState();">
-        <td style="color:var(--neon)">${item.id}</td>
-        <td>${dateFormatted}</td>
-        <td>${totalLogs}</td>
-        <td>${item.threat_count}</td>
-      </tr>
-    `;
-  }
-  
-  document.getElementById("table-history").innerHTML = historyRowsHtml;
+  try {
+    const res = await fetch("/api/sessions");
+    if (!res.ok) return;
+    const sessions = await res.json();
 
-  let optionsHtml = "";
-  for (let i = 0; i < sessions.length; i++) {
-    const id = sessions[i].id;
-    optionsHtml = optionsHtml + `<option value="${id}">${id}</option>`;
+    const historyRowsHtml = sessions.map(item => {
+      const totalLogs = item.network_count + item.process_count;
+      const dateFormatted = new Date(item.started_at).toLocaleString();
+      return `
+        <tr onclick="state.mode='history'; state.sessionId='${item.id}'; updateState();">
+          <td style="color:var(--neon)">${item.id}</td>
+          <td>${dateFormatted}</td>
+          <td>${totalLogs}</td>
+          <td>${item.threat_count}</td>
+        </tr>
+      `;
+    }).join("");
+    
+    document.getElementById("table-history").innerHTML = historyRowsHtml;
+
+    const optionsHtml = sessions.map(s => `<option value="${s.id}">${s.id}</option>`).join("") || "<option>No sessions found</option>";
+    document.getElementById("comp-a").innerHTML = optionsHtml;
+    document.getElementById("comp-b").innerHTML = optionsHtml;
+  } catch (err) {
+    console.error("Failed to populate sessions history:", err);
   }
-  
-  if (optionsHtml === "") {
-    optionsHtml = "<option>No sessions found</option>";
-  }
-  
-  document.getElementById("comp-a").innerHTML = optionsHtml;
-  document.getElementById("comp-b").innerHTML = optionsHtml;
 }
 
-// Compare differences in running processes between two logs
-document.getElementById("btn-exec-compare").addEventListener("click", async function() {
+document.getElementById("btn-exec-compare").addEventListener("click", async () => {
   const sessionA = document.getElementById("comp-a").value;
   const sessionB = document.getElementById("comp-b").value;
   
@@ -995,149 +834,83 @@ document.getElementById("btn-exec-compare").addEventListener("click", async func
   }
 
   try {
-    const processesA = await fetch(`/api/session/${sessionA}/process`).then(function(r) { return r.json(); });
-    const processesB = await fetch(`/api/session/${sessionB}/process`).then(function(r) { return r.json(); });
+    const [procA, procB] = await Promise.all([
+      fetch(`/api/session/${sessionA}/process`).then(r => r.json()),
+      fetch(`/api/session/${sessionB}/process`).then(r => r.json())
+    ]);
 
-    const namesA = new Set();
-    for (let i = 0; i < processesA.length; i++) {
-      if (processesA[i].process && processesA[i].process.name) {
-        namesA.add(processesA[i].process.name);
-      }
-    }
-    
-    const namesB = new Set();
-    for (let i = 0; i < processesB.length; i++) {
-      if (processesB[i].process && processesB[i].process.name) {
-        namesB.add(processesB[i].process.name);
-      }
-    }
+    const namesA = new Set(procA.map(p => p.process?.name).filter(Boolean));
+    const namesB = new Set(procB.map(p => p.process?.name).filter(Boolean));
 
-    const missingList = [];
-    namesA.forEach(function(item) {
-      if (!namesB.has(item)) {
-        missingList.push(item);
-      }
-    });
-    
-    const addedList = [];
-    namesB.forEach(function(item) {
-      if (!namesA.has(item)) {
-        addedList.push(item);
-      }
-    });
+    const missing = [...namesA].filter(name => !namesB.has(name));
+    const added = [...namesB].filter(name => !namesA.has(name));
 
-    let missingHtml = "";
-    for (let i = 0; i < missingList.length; i++) {
-      missingHtml = missingHtml + "<li>" + missingList[i] + "</li>";
-    }
-    if (missingHtml === "") {
-      missingHtml = "<li>No differences detected</li>";
-    }
-    
-    let addedHtml = "";
-    for (let i = 0; i < addedList.length; i++) {
-      addedHtml = addedHtml + "<li>" + addedList[i] + "</li>";
-    }
-    if (addedHtml === "") {
-      addedHtml = "<li>No differences detected</li>";
-    }
-
-    document.getElementById("diff-missing").innerHTML = missingHtml;
-    document.getElementById("diff-new").innerHTML = addedHtml;
-  } catch(e) { 
-    console.error("Comparison matrix execution failed", e); 
+    document.getElementById("diff-missing").innerHTML = missing.map(name => `<li>${name}</li>`).join("") || "<li>No differences detected</li>";
+    document.getElementById("diff-new").innerHTML = added.map(name => `<li>${name}</li>`).join("") || "<li>No differences detected</li>";
+  } catch (err) { 
+    console.error("Session comparison failed:", err); 
   }
 });
 
-// Configure sidebar tab links
 function setupNav() {
-  const links = document.querySelectorAll(".nav-link");
-  
-  for (let i = 0; i < links.length; i++) {
-    const link = links[i];
-    link.addEventListener("click", function() {
-      const allLinks = document.querySelectorAll(".nav-link");
-      for (let j = 0; j < allLinks.length; j++) {
-        allLinks[j].classList.remove("active");
-      }
-      
-      const allPanels = document.querySelectorAll(".panel");
-      for (let j = 0; j < allPanels.length; j++) {
-        allPanels[j].classList.remove("active");
-      }
+  document.querySelectorAll(".nav-link").forEach(link => {
+    link.addEventListener("click", () => {
+      document.querySelectorAll(".nav-link").forEach(l => l.classList.remove("active"));
+      document.querySelectorAll(".panel").forEach(p => p.classList.remove("active"));
       
       link.classList.add("active");
-      const targetPanelName = link.dataset.target;
-      const targetPanel = document.getElementById("panel-" + targetPanelName);
-      targetPanel.classList.add("active");
+      const target = link.dataset.target;
+      document.getElementById(`panel-${target}`).classList.add("active");
       
-      if (targetPanelName === "history" || targetPanelName === "compare") {
+      if (target === "history" || target === "compare") {
         populateHistory();
-      }
-      if (targetPanelName === "analytics") {
+      } else if (target === "analytics") {
         renderCharts(state.data);
-      }
-      if (targetPanelName === "tree") {
+      } else if (target === "tree") {
         renderProcessTree(state.data);
-      }
-      if (targetPanelName === "map") {
+      } else if (target === "map") {
         renderMap(state.data.geo);
       }
     });
-  }
+  });
 }
 
-// Configures controls start and stop buttons
 function setupControls() {
-  document.getElementById("btn-start").addEventListener("click", async function() {
+  document.getElementById("btn-start").addEventListener("click", async () => {
     await fetch("/api/scan/start", { method: "POST" });
     state.mode = "live";
     await updateState();
   });
   
-  document.getElementById("btn-stop").addEventListener("click", async function() {
+  document.getElementById("btn-stop").addEventListener("click", async () => {
     await fetch("/api/scan/stop", { method: "POST" });
     await updateState();
   });
 }
 
-function fmtTime(timestamp) {
-  if (timestamp === "") {
-    return "—";
-  }
-  if (timestamp === undefined) {
-    return "—";
-  }
-  const dateObj = new Date(timestamp);
-  const isValid = isNaN(dateObj);
-  if (isValid) {
-    return timestamp;
-  }
-  return dateObj.toLocaleTimeString();
+function fmtTime(ts) {
+  if (!ts) return "—";
+  const d = new Date(ts);
+  return isNaN(d) ? ts : d.toLocaleTimeString();
 }
 
 window.addEventListener("DOMContentLoaded", init);
 
-// Exporter of telemetry logs as local CSV files
 function exportTableData(type) {
   const records = state.data[type];
-  if (records === undefined) {
-    alert("No records available to export.");
-    return;
-  }
-  if (records.length === 0) {
+  if (!records || records.length === 0) {
     alert("No records available to export.");
     return;
   }
 
   let headers = [];
-  let rowMapper = function() { return []; };
+  let rowMapper = () => [];
 
   if (type === "network") {
     headers = ["Timestamp", "Protocol", "PID", "Local IP", "Local Port", "Remote IP", "Remote Port", "Direction", "State"];
-    rowMapper = function(item) {
+    rowMapper = item => {
       const sock = item.socket || {};
-      const output = [
+      return [
         item.timestamp || "",
         sock.protocol || "",
         sock.pid || "",
@@ -1148,83 +921,51 @@ function exportTableData(type) {
         sock.direction || "",
         sock.state || ""
       ];
-      return output;
     };
   } else if (type === "processes") {
     headers = ["Timestamp", "Action", "PID", "Process Name", "Risk Score", "Executable Path", "Command Line", "Username"];
-    rowMapper = function(item) {
+    rowMapper = item => {
       const proc = item.process || {};
-      const rawCmd = proc.cmdline || "";
-      const escapedCmd = rawCmd.replace(/"/g, '""');
-      
-      const output = [
+      return [
         item.timestamp || "",
         item.action || "",
         proc.pid || "",
         proc.name || "",
         proc.risk_score || 0,
         proc.path || "",
-        `"${escapedCmd}"`,
+        `"${(proc.cmdline || "").replace(/"/g, '""')}"`,
         proc.user || ""
       ];
-      return output;
     };
   } else if (type === "hashes") {
     headers = ["Timestamp", "Process GUID", "File Name", "SHA256 Hash", "Status"];
-    rowMapper = function(item) {
-      const output = [
-        item.timestamp || "",
-        item.process_guid || "",
-        item.file_name || "",
-        item.sha256 || "",
-        item.status || ""
-      ];
-      return output;
-    };
+    rowMapper = item => [
+      item.timestamp || "",
+      item.process_guid || "",
+      item.file_name || "",
+      item.sha256 || "",
+      item.status || ""
+    ];
   } else {
     alert("Unsupported export format.");
     return;
   }
 
   const csvRows = [headers.join(",")];
-  
-  for (let i = 0; i < records.length; i++) {
-    const item = records[i];
-    const mappedValues = rowMapper(item);
-    const cleanedValues = [];
-    
-    for (let j = 0; j < mappedValues.length; j++) {
-      const stringifiedValue = "" + mappedValues[j];
-      const escapedValue = stringifiedValue.replace(/"/g, '""');
-      
-      let containsSpecial = false;
-      if (escapedValue.includes(',')) {
-        containsSpecial = true;
-      }
-      if (escapedValue.includes('\n')) {
-        containsSpecial = true;
-      }
-      if (escapedValue.includes('"')) {
-        containsSpecial = true;
-      }
-      
-      if (containsSpecial) {
-        cleanedValues.push(`"${escapedValue}"`);
-      } else {
-        cleanedValues.push(escapedValue);
-      }
-    }
-    
-    csvRows.push(cleanedValues.join(","));
-  }
+  records.forEach(item => {
+    const row = rowMapper(item).map(val => {
+      const str = String(val).replace(/"/g, '""');
+      return (str.includes(',') || str.includes('\n') || str.includes('"')) ? `"${str}"` : str;
+    });
+    csvRows.push(row.join(","));
+  });
 
-  const csvBlob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
-  const csvUrl = URL.createObjectURL(csvBlob);
-  const downloadLink = document.createElement("a");
-  
-  downloadLink.href = csvUrl;
-  downloadLink.setAttribute("download", `netship_${type}_export_${Date.now()}.csv`);
-  document.body.appendChild(downloadLink);
-  downloadLink.click();
-  document.body.removeChild(downloadLink);
+  const blob = new Blob([csvRows.join("\n")], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.setAttribute("download", `netship_${type}_export_${Date.now()}.csv`);
+  document.body.appendChild(link);
+  link.click();
+  document.body.removeChild(link);
 }
