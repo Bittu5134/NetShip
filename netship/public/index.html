@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>netship</title>
+<style>
+  body { font: 14px/1.5 system-ui, sans-serif; margin: 48px auto; max-width: 760px; color: #222; }
+  pre { background: #f4f4f4; padding: 12px; overflow: auto; }
+</style>
+</head>
+<body>
+<h1>netship</h1>
+<p>Cases land here once something on this machine does something new.</p>
+<button id="start">start</button>
+<button id="stop">stop</button>
+<pre id="out">loading...</pre>
+<script>
+const out = document.getElementById('out');
+const post = (url) => fetch(url, { method: 'POST' }).then(load);
+async function load() {
+  const d = await fetch('/api/state').then((r) => r.json());
+  out.textContent = JSON.stringify({ running: d.running, stats: d.stats, cases: d.cases }, null, 2);
+}
+document.getElementById('start').onclick = () => post('/api/scan/start');
+document.getElementById('stop').onclick = () => post('/api/scan/stop');
+load();
+setInterval(load, 5000);
+</script>
+</body>
+</html>
