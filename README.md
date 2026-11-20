@@ -1,111 +1,137 @@
-# NetShip EDR
+# netship
 
-NetShip is a local host monitoring utility and security auditing tool. It captures socket activity, profiles process lifecycles, and correlates real-time telemetry to flag suspicious behavior. NetShip embeds a dark-mode web dashboard featuring live geospatial traffic mapping, process lineage trees, port analytics, and historic session drift comparison.
+Watches this machine's outbound connections and stays quiet until something is
+new for the binary making them.
 
----
+It is not a connection log. It remembers, per executable, every remote endpoint
+that binary has ever been seen talking to, and then only speaks up when
+something it has never seen before happens:
 
-## Technical Features
+```
+HIGH    install.js (pid 4412, npm -> node)
+        Download-and-execute shaped command line
+        · first ever outbound connection: 203.0.113.9:443 · NL · Unmanaged Ltd
+        · runs from a temporary directory · runs from a package install directory
 
-* **Real-Time Network Telemetry:** Polls active TCP/UDP sockets (IPv4 and IPv6) capturing state transitions, local/remote endpoints, and connection directionality.
-* **Process Lineage Profiling:** Maps process lifecycles, child execution dependencies, execution paths, execution vital signs, and user contexts.
-* **Threat Feed Correlator:** Audits active binaries using SHA256 hashing. Hashes are cross-referenced with a local malicious signature database and matched dynamically against the public **ThreatFox (Abuse.ch)** API.
-* **Geospatial Mapping & Cloud Detection:** Geolocates outbound IP targets relative to datacenter catalogs and checks external traffic routes against known cloud CIDR blocks.
-* **Reverse DNS Resolution:** Automatically resolves target IPs to reverse DNS hostname profiles.
-* **Data Exporters:** Supports CSV table exports for network telemetry, processes lifecycle tables, and file signature hashes directly from the UI.
+LOW     firefox (pid 2210)
+        New destination for firefox: 192.0.2.51:443 · BR · Claro NXT Telecom
+        · baseline for this executable goes back to an earlier session
+```
 
----
+No root, no agent, no account, no flags. One binary and a five line JSON file.
 
-## Dashboard Anatomy
+## run
 
-### 📊 Overview
-A real-time system threat gauge displaying cumulative risk metrics and a security alerts ledger.
-![Overview](.github/assets/overview.png)
+```bash
+go build -o netship .    # Go 1.26+
+./netship
+```
 
-### 📈 Analytics
-Visual connection timelines, port distributions, protocol ratios, and process execution churn charts.
-![Analytics](.github/assets/analytics.png)
+```
+netship - what is new on this machine's network edge
 
-### 🗺️ Network Map
-A geospatial Leaflet-based visualization connecting active socket endpoints to datacenter profiles.
-![Network Map](.github/assets/network_map.png)
+  dashboard  http://127.0.0.1:8787
+  config     ~/.config/netship/config.json
+  baseline   ~/.local/share/netship (0 binaries)
+  poll       every 2s, silent for the first 5m
+```
 
-### 🌿 Process Tree
-Relational node trees illustrating parent-child process dependencies (e.g. shells spawned from system services).
-![Process Tree](.github/assets/process_tree.png)
+Open the URL. Start and Stop control the watcher. Demo puts a synthetic case
+list in front of you without touching this machine: three made up cases on
+documentation addresses, with a banner saying so.
 
-### 🌐 Network Events
-Logs socket lifecycle transitions and network connections.
-![Network Events](.github/assets/network_events.png)
+The first `learning` window is silent because it is filling the baseline, not
+because it is broken. Quiet after that is also normal. An empty case list is
+the healthy state on a laptop.
 
-### ⚙️ Processes
-Logs process registry states and threat alerts.
-![Processes](.github/assets/processes.png)
+## config
 
-### 🔑 File Hashes
-Stores computed hash audit results and local malware database check details.
-![File Hashes](.github/assets/file_hashes.png)
+`~/.config/netship/config.json`, written on first run:
 
-### 📂 Sessions & Diff Matrix
-Historical scan log database with a side-by-side session comparison tool to isolate process drift between different runs.
+```json
+{
+  "listen": "127.0.0.1:8787",
+  "data_dir": "~/.local/share/netship",
+  "interval": "2s",
+  "learning": "5m",
+  "enrich": true
+}
+```
 
----
+Missing fields stay default, so a partial file is fine. `enrich: false` turns
+off the ASN lookups and the tool still works, it just stops knowing which
+destinations are cloud infrastructure.
 
-## Getting Started
+To forget everything it has learned:
 
-### Prerequisites
+```bash
+rm ~/.local/share/netship/baseline.json
+```
 
-* Go 1.26 or higher
-* Active internet connection (on initial scan to retrieve threat signatures and cloud CIDR datasets)
+Uninstalling is deleting the binary.
 
-### Installation & Run
+## why it exists
 
-1. **Get dependencies:**
-   ```bash
-   go mod download
-   ```
+Every network monitor I tried died the same way: it showed me everything and I
+read nothing. One minute of ordinary desktop use produced 356 rows, 70 of them
+sockets that had already closed and 69 with no owning process, and not one
+finding, while scoring a torrent client 20/100 for being busy.
 
-2. **Build NetShip:**
-   ```bash
-   go build -o NetShip.exe .
-   ```
+So this stores state instead of events: one row per binary and remote, one card
+per process, and output only when the pair is new. A browser talking to Fastly
+is not a finding. Dropping cloud and CDN traffic before it is stored removes
+most of the noise, and the suppressed counter in the dashboard is the number
+that got thrown away, so the filter is visible instead of invisible.
 
-3. **Run the Dashboard:**
-   ```bash
-   ./NetShip.exe server
-   ```
-   Open `http://localhost:8080` in your web browser.
+## how it works
 
----
+1. Poll the socket table every `interval`, skipping itself, sockets with no
+   owner, loopback and private addresses, and teardown states.
+2. Name each socket's process and key it on executable plus start time, so a
+   browser restarted forty times is one subject.
+3. Look up each remote's ASN over plain DNS (Team Cymru). No HTTP, no key, no
+   third party learning what you resolve. Cloud and CDN ASNs stop here.
+4. Compare what is left against `baseline.json`.
+5. Report the difference, on stdout and in the dashboard.
 
-## CLI Options
+## findings
 
-| Option / Arg | Example | Description |
-| :--- | :--- | :--- |
-| `server` | `NetShip.exe server` | Starts HTTP API server and web portal (default port: `:8080`). |
-| `scan` | `NetShip.exe scan` | Launches background process & network telemetry loop directly. |
-| `:PORT` | `NetShip.exe :9090` | Starts the server on a custom port address. |
+| kind | severity | when |
+|---|---|---|
+| `SUSPICIOUS_CMD` | high | the command line looks like download and execute: `curl ... \| sh`, `base64 -d`, `/dev/tcp/`, `nc -e` |
+| `FIRST_NETWORK` | medium, high if the origin is bad | an executable with no baseline makes its first outbound connection |
+| `NEW_DESTINATION` | low, medium from a bad origin | a known binary talks to a non cloud endpoint it has never used |
+| `RISKY_ORIGIN` | medium | something from `/tmp`, `Downloads`, `node_modules`, or a binary written in the last day goes out |
+| `NEW_LISTENER` | low | a new binary binds a port, or any port from a bad origin |
+| `FANOUT` | medium | one process reaches 8 or more new destinations inside a minute |
 
----
+Severity comes from combining facts about the same process, not from adding
+points until a number looks scary.
 
-## Telemetry Layout
+## what it cannot do
 
-### Historic Session Logs
-Telemetry is serialized into JSON Lines (JSONL) format in the `data/` subdirectory, grouped by timestamp session ID (`data/<YYYYMMDD_HHMMSS>/`):
-* `network.jsonl`: Captures socket state logs (`OPEN`, `CLOSED`).
-* `processes.jsonl`: Logs process startup events and computed risk evaluations.
-* `children.jsonl`: Captures parent-to-child lineage relationships.
-* `geolocation.jsonl`: Stores resolved IP coordinates and carrier ISPs.
-* `threat_hashes.jsonl`: Saves binary hash signature status evaluations.
+- Short-lived processes are invisible. At 2s polling a `curl` that lives 300ms
+  is usually missed, and if it exits before attribution there is nothing to
+  name.
+- No byte counters, so no volume or exfiltration detection. The socket table
+  does not have them.
+- No names and no payload. IPs only, no SNI, no DNS sniffing.
+- Without root it sees your processes only.
+- Whatever was already running before the first scan is normal. Delete
+  `baseline.json` if you think that happened.
+- Anything that wants to kill it can.
 
-### Resource Feeds
-Fetched and cached in the `resources/` subdirectory on first boot:
-* `malicious_hashes.txt`: Local malware signature database.
-* `datacenters.json`: Global cloud service provider datacenter profile database.
-* `ipv4_merged.txt` / `ipv6_merged.txt`: Aggregated cloud provider CIDR blocks.
+## known issues
 
----
+- The map draws every flow on the same canvas, so a few hundred destinations
+  is fine and a few thousand is not.
+- Restarting with a big baseline takes a moment to load before the dashboard
+  has anything to show.
+- The demo store is seeded on first use and thrown away on exit, so charts in
+  demo mode always start at the same place.
 
-## License
+## layout
 
-NetShip is released under the MIT License.
-
+`main.go` is the shell: config, listener, signal handling. Everything else is
+the `netship` package, including the dashboard, which is embedded and has no
+build step.
