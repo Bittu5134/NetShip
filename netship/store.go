@@ -35,6 +35,11 @@ type Binary struct {
 	FirstSeen time.Time       `json:"first_seen"`
 	LastSeen  time.Time       `json:"last_seen"`
 	Remotes   map[string]bool `json:"remotes"` // "1.2.3.4:443/tcp"
+
+	// Outbound is set the first time this binary reaches anything that is not a
+	// listener, including the cloud contacts we drop. It outlives a Remotes
+	// reset, so a wiped set cannot turn a known binary into a first contact.
+	Outbound bool `json:"outbound,omitempty"`
 }
 
 type baselineFile struct {
@@ -73,6 +78,9 @@ func (s *Store) load() {
 		return
 	}
 	for k, v := range bf.Binaries {
+		if v == nil {
+			continue
+		}
 		if v.Remotes == nil {
 			v.Remotes = map[string]bool{}
 		}
@@ -188,6 +196,9 @@ func (s *Store) Remember(key, name, remote string, now time.Time) {
 		b.Name = name
 	}
 	b.LastSeen = now
+	if remote != "" && !strings.HasPrefix(remote, "listen:") {
+		b.Outbound = true
+	}
 	if remote != "" && !b.Remotes[remote] {
 		// A browser can reach thousands of these. Oldest-first eviction would
 		// need ordering we do not keep, so the set is dropped whole and that
@@ -206,12 +217,34 @@ func (s *Store) HasOutboundRemote(key string) bool {
 	if !ok {
 		return false
 	}
+	if b.Outbound {
+		return true
+	}
+	// Older baseline files have no flag, so fall back to reading the remotes.
 	for r := range b.Remotes {
 		if !strings.HasPrefix(r, "listen:") {
 			return true
 		}
 	}
 	return false
+}
+
+// Touch registers a binary without storing a remote. Contacts we drop as cloud
+// go through here: they still count as history, but the endpoint does not end
+// up in the baseline.
+func (s *Store) Touch(key, name string, now time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	b, ok := s.baseline[key]
+	if !ok {
+		b = &Binary{Key: key, FirstSeen: now, Remotes: map[string]bool{}}
+		s.baseline[key] = b
+	}
+	if b.Name == "" {
+		b.Name = name
+	}
+	b.LastSeen = now
+	b.Outbound = true
 }
 
 func (s *Store) UpsertProcess(p Process) {

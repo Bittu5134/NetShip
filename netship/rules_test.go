@@ -114,16 +114,49 @@ func TestCloudTrafficIsSuppressed(t *testing.T) {
 	addFlow(s, "g1", "151.101.1.1", 443, now, true)
 
 	c.evaluate(now)
-	if n := len(s.Snapshot(now, false, false).Findings); n != 0 {
-		t.Fatalf("%d findings from a CDN contact", n)
+	snap := s.Snapshot(now, false, false)
+	if len(snap.Findings) != 0 {
+		t.Fatalf("%d findings from a CDN contact", len(snap.Findings))
 	}
-	if sup := s.Snapshot(now, false, false).Stats.Suppressed; sup != 1 {
-		t.Fatalf("suppressed %d, want 1", sup)
+	if snap.Stats.Suppressed != 1 {
+		t.Fatalf("suppressed %d, want 1", snap.Stats.Suppressed)
 	}
-	// The binary is still registered, or its first real contact would look like
-	// a first ever contact.
-	if s.HasOutboundRemote("/usr/bin/firefox") {
-		t.Fatal("a CDN contact was written to the outbound baseline")
+	// The endpoint is not stored, but the binary counts as having been out, or
+	// its first real contact would be reported as a first ever contact.
+	if !s.HasOutboundRemote("/usr/bin/firefox") {
+		t.Fatal("a CDN contact did not count as outbound history")
+	}
+	if _, seen, _ := s.LookupBinary("/usr/bin/firefox", "151.101.1.1:443/tcp"); seen {
+		t.Fatal("the CDN endpoint was stored as a remote")
+	}
+}
+
+func TestCloudOnlyBinaryGetsNewDestination(t *testing.T) {
+	s, c, now := testCollector(t, 0)
+	addProc(s, "g1", "/usr/bin/firefox", 0, now)
+	addFlow(s, "g1", "151.101.1.1", 443, now, true)
+	c.evaluate(now)
+
+	addFlow(s, "g1", "192.0.2.9", 443, now, false)
+	c.evaluate(now)
+
+	got := findingsByKind(s, now)
+	if _, ok := got[KindFirstNetwork]; ok {
+		t.Fatal("a binary that only talked to a CDN was reported as a first contact")
+	}
+	if _, ok := got[KindNewRemote]; !ok {
+		t.Fatalf("expected NEW_DESTINATION, got %v", got)
+	}
+}
+
+func TestWipedRemoteSetDoesNotLookNew(t *testing.T) {
+	s, _, now := testCollector(t, 0)
+	s.Remember("/usr/bin/firefox", "firefox", "1.1.1.1:443/tcp", now)
+	for i := 0; i < 4100; i++ {
+		s.Remember("/usr/bin/firefox", "firefox", "203.0.113."+itoa(i%250)+":"+itoa(1000+i)+"/tcp", now)
+	}
+	if !s.HasOutboundRemote("/usr/bin/firefox") {
+		t.Fatal("the binary stopped counting as outbound after the remote set was wiped")
 	}
 }
 
