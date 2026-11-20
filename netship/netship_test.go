@@ -1,6 +1,7 @@
 package netship
 
 import (
+	"net/http"
 	"os"
 	"testing"
 	"time"
@@ -42,6 +43,31 @@ func hasString(xs []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func TestSameOrigin(t *testing.T) {
+	cases := []struct {
+		name   string
+		origin string
+		host   string
+		want   bool
+	}{
+		{"no header, curl or a form post", "", "127.0.0.1:8787", true},
+		{"this dashboard", "http://127.0.0.1:8787", "127.0.0.1:8787", true},
+		{"another site", "https://evil.example", "127.0.0.1:8787", false},
+		{"same host, other port", "http://127.0.0.1:3000", "127.0.0.1:8787", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r := &http.Request{Host: c.host, Header: http.Header{}}
+			if c.origin != "" {
+				r.Header.Set("Origin", c.origin)
+			}
+			if got := sameOrigin(r); got != c.want {
+				t.Fatalf("sameOrigin = %v, want %v", got, c.want)
+			}
+		})
+	}
 }
 
 func TestPrivateRanges(t *testing.T) {
