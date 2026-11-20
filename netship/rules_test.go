@@ -3,6 +3,8 @@ package netship
 import (
 	"testing"
 	"time"
+
+	psnet "github.com/shirou/gopsutil/v4/net"
 )
 
 func testCollector(t *testing.T, learning time.Duration) (*Store, *Collector, time.Time) {
@@ -143,21 +145,61 @@ func TestFanout(t *testing.T) {
 	}
 }
 
-func TestListenerOnlyWhenRisky(t *testing.T) {
+func TestNewListenerFiresOnce(t *testing.T) {
 	s, c, now := testCollector(t, 0)
 	addProc(s, "g1", "/usr/bin/node", 0, now)
 	addListener(s, "g1", 8080, now)
 
 	c.evaluate(now)
-	if _, ok := findingsByKind(s, now)[KindNewListener]; ok {
-		t.Fatal("a port from a clean origin should not be a finding")
+	f, ok := findingsByKind(s, now)[KindNewListener]
+	if !ok {
+		t.Fatal("a port this binary never bound before should be a finding")
+	}
+	if f.Severity != SevLow {
+		t.Fatalf("severity %v, want low for a clean origin", f.Severity)
 	}
 
-	addProc(s, "g2", "/tmp/build/serve", 65, now)
-	addListener(s, "g2", 9090, now)
+	// Second pass: the port is in the baseline now.
 	c.evaluate(now)
-	if _, ok := findingsByKind(s, now)[KindNewListener]; !ok {
-		t.Fatal("expected NEW_LISTENER from a risky origin")
+	if n := len(s.Snapshot(now, false, false).Findings); n != 1 {
+		t.Fatalf("%d findings after a second pass, want 1", n)
+	}
+}
+
+func TestUnconnectedUDPIsNotAListener(t *testing.T) {
+	udp := psnet.ConnectionStat{Type: 2, Laddr: psnet.Addr{Port: 5353}}
+	if isListener(udp) {
+		t.Fatal("a bound udp socket with no peer is not a listener")
+	}
+	tcp := psnet.ConnectionStat{Type: 1, Laddr: psnet.Addr{Port: 8080}}
+	if !isListener(tcp) {
+		t.Fatal("a tcp socket with no peer is a listener")
+	}
+	if !isListener(psnet.ConnectionStat{Type: 2, Status: "LISTEN"}) {
+		t.Fatal("udp in LISTEN state is still a listener")
+	}
+}
+
+func TestDemoOnlyShowsWhatTheRulesProduce(t *testing.T) {
+	s, err := OpenStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	SeedDemo(s)
+	snap := s.Snapshot(time.Now(), false, false)
+	for _, f := range snap.Findings {
+		if f.Kind != KindSuspicious {
+			continue
+		}
+		var cmd string
+		for _, p := range snap.Processes {
+			if p.GUID == f.ProcessGUID {
+				cmd = p.Cmdline
+			}
+		}
+		if _, ok := suspiciousCmdline(cmd); !ok {
+			t.Fatalf("the demo shows a suspicious line the rules cannot produce: %q", cmd)
+		}
 	}
 }
 
