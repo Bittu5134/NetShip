@@ -1,18 +1,13 @@
 package netship
 
 import (
-	"context"
 	"encoding/json"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
 	"time"
-
-	psnet "github.com/shirou/gopsutil/v4/net"
-	"github.com/shirou/gopsutil/v4/process"
 )
 
 // Store owns all the mutable state. The collector is the only writer and the
@@ -362,163 +357,6 @@ func (s *Store) casesLocked() []Case {
 		return cases[i].Process.LastSeen.After(cases[j].Process.LastSeen)
 	})
 	return cases
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	var b [20]byte
-	i := len(b)
-	for n > 0 {
-		i--
-		b[i] = byte('0' + n%10)
-		n /= 10
-	}
-	if neg {
-		i--
-		b[i] = '-'
-	}
-	return string(b[i:])
-}
-
-// processMeta caches the per-pid lookups. Re-reading exe, cmdline, cwd and user
-// for 400 pids every two seconds was most of the CPU this thing used.
-type processMeta struct {
-	guid       string
-	ppid       int32
-	name       string
-	exe        string
-	cmdline    string
-	cwd        string
-	user       string
-	created    int64
-	originRisk int
-	originWhy  []string
-	fetched    time.Time
-}
-
-type metaCache struct {
-	mu sync.RWMutex
-	m  map[int32]*processMeta
-}
-
-func newMetaCache() *metaCache { return &metaCache{m: map[int32]*processMeta{}} }
-
-// Get refreshes when the pid is unknown, or when its start time no longer
-// matches: a pid reused inside one poll is a different process wearing the same
-// number, and CreateTime is the cheapest way to tell.
-func (c *metaCache) Get(pid int32) *processMeta {
-	c.mu.RLock()
-	meta, ok := c.m[pid]
-	c.mu.RUnlock()
-	if ok {
-		if p, err := process.NewProcess(pid); err == nil {
-			if created, _ := p.CreateTime(); created != 0 && created != meta.created {
-				ok = false
-			}
-		}
-	}
-	if !ok {
-		fresh := fetchMeta(pid)
-		c.mu.Lock()
-		c.m[pid] = fresh
-		c.mu.Unlock()
-		return fresh
-	}
-	return meta
-}
-
-func (c *metaCache) Prune(alive map[int32]bool) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	for pid := range c.m {
-		if !alive[pid] {
-			delete(c.m, pid)
-		}
-	}
-}
-
-func fetchMeta(pid int32) *processMeta {
-	meta := &processMeta{}
-	p, err := process.NewProcess(pid)
-	if err != nil {
-		// Gone before we could name it. Keep it keyed by pid so these do not
-		// all share one baseline and hide each other's remotes, and still run
-		// the origin check so "no executable path" is not silently dropped.
-		meta.name = "unresolved"
-		meta.guid = shortID("unresolved", itoa(int(pid)))
-		meta.originRisk, meta.originWhy = originRisk("", "", "")
-		return meta
-	}
-	meta.name, _ = p.Name()
-	if meta.name == "" {
-		meta.name = "unknown"
-	}
-	meta.exe, _ = p.Exe()
-	meta.cmdline, _ = p.Cmdline()
-	meta.cwd, _ = p.Cwd()
-	meta.user, _ = p.Username()
-	meta.created, _ = p.CreateTime()
-	meta.ppid, _ = p.Ppid()
-	meta.guid = shortID(meta.exe, itoa(int(meta.created)), itoa(int(pid)))
-	meta.originRisk, meta.originWhy = originRisk(meta.exe, meta.cwd, meta.cmdline)
-	meta.fetched = time.Now()
-	return meta
-}
-
-// Everything here was measured on a real machine: in 60 seconds the first
-// version logged 356 rows, 70 of them sockets that had already closed and 69
-// with no owning process. None of it was a finding.
-func isNoise(conn psnet.ConnectionStat, self int32) bool {
-	if conn.Pid <= 0 || conn.Pid == self {
-		return true
-	}
-	switch conn.Status {
-	case "TIME_WAIT", "CLOSE", "CLOSE_WAIT", "LAST_ACK", "FIN_WAIT1", "FIN_WAIT2", "CLOSING":
-		return true
-	}
-	// SYN_SENT stays: an attempt that never completes is still an attempt, and
-	// filtering these out is exactly how a polling monitor misses short
-	// lived beacons.
-	return false
-}
-
-func isListener(conn psnet.ConnectionStat) bool {
-	return conn.Status == "LISTEN" || (conn.Raddr.IP == "" && conn.Raddr.Port == 0 && conn.Laddr.Port != 0)
-}
-
-// One goroutine, one loop, no subprocess and nothing to supervise.
-func (c *Collector) Run(ctx context.Context) error {
-	c.hasher.Start(ctx)
-	ticker := time.NewTicker(c.Interval)
-	defer ticker.Stop()
-	save := time.NewTicker(30 * time.Second)
-	defer save.Stop()
-
-	c.tick(ctx, time.Now())
-	for {
-		select {
-		case <-ctx.Done():
-			return c.store.Save()
-		case <-save.C:
-			if err := c.store.Save(); err != nil {
-				// A full disk should not stop the watcher. What is on disk is still
-				// the last good baseline and the next tick tries again.
-				fmt.Printf("saving baseline: %v\n", err)
-			}
-		case <-ticker.C:
-			if err := c.tick(ctx, time.Now()); err != nil {
-				// A process that vanished mid-poll is not fatal, the next tick
-				// picks up whatever is still there.
-				continue
-			}
-		}
-	}
 }
 
 // So the demo scenario goes through the same write path as live telemetry.
