@@ -166,6 +166,41 @@ func TestBaselineSurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestFindingsSurviveRestart(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now()
+
+	s, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	s.UpsertProcess(Process{GUID: "g1", PID: 7, Name: "curl", Exe: "/usr/bin/curl", FirstSeen: now, LastSeen: now})
+	s.AddFinding(Finding{
+		ID: "f1", Kind: KindFirstNetwork, Severity: SevMedium,
+		ProcessGUID: "g1", ProcessName: "curl", Title: "First ever outbound connection: curl",
+		Evidence: []string{"first outbound contact from this executable"},
+		FirstSeen: now, LastSeen: now, Count: 1,
+	})
+	if err := s.Save(); err != nil {
+		t.Fatal(err)
+	}
+
+	again, err := OpenStore(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap := again.Snapshot(now, false, false)
+	if len(snap.Findings) != 1 {
+		t.Fatalf("%d findings after a restart, want 1", len(snap.Findings))
+	}
+	if len(snap.Cases) != 1 {
+		t.Fatalf("%d cases after a restart, want 1", len(snap.Cases))
+	}
+	if snap.Cases[0].Summary == "" {
+		t.Fatal("the restored case lost its summary")
+	}
+}
+
 func TestCorruptBaselineIsMovedAside(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(dir+"/baseline.json", []byte("{not json"), 0o644); err != nil {
