@@ -283,6 +283,12 @@ func (s *Store) Snapshot(now time.Time, learning, enriching bool) Snapshot {
 		StartedAt:   s.started,
 		Learning:    learning,
 		Enriching:   enriching,
+		// Empty, not nil: the JSON then has [] instead of null and the
+		// dashboard never has to guess.
+		Cases:     []Case{},
+		Processes: []Process{},
+		Flows:     []Flow{},
+		Findings:  []Finding{},
 		Stats: Stats{
 			Processes:  len(s.procs),
 			Flows:      len(s.flows),
