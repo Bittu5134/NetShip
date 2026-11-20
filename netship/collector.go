@@ -280,7 +280,6 @@ func (c *Collector) evaluate(now time.Time) {
 			where += " (ASN unresolved)"
 		}
 		if unclassified && proc.OriginRisk < 40 {
-			c.store.Remember(proc.Key(), proc.Name, remoteKey, now)
 			continue
 		}
 		switch {
