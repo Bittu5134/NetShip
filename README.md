@@ -23,8 +23,8 @@ No root, no agent, no account, no flags. One binary and a five line JSON file.
 ## run
 
 ```bash
-go build -o netship .    # Go 1.26+
-./netship
+go build -o netship.bin .    # Go 1.26+
+./netship.bin
 ```
 
 ```
