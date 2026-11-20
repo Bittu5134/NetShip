@@ -262,7 +262,7 @@ func (c *Collector) evaluate(now time.Time) {
 		// like a first contact.
 		if f.Hosting {
 			c.evaluated[f.Key] = true
-			c.store.Remember(proc.Key(), proc.Name, "", now)
+			c.store.Touch(proc.Key(), proc.Name, now)
 			c.store.Suppress(1)
 			continue
 		}
