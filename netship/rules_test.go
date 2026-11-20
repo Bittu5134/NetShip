@@ -231,4 +231,31 @@ func TestUnclassifiedLowRiskIsIgnored(t *testing.T) {
 	if n := len(s.Snapshot(now, false, false).Findings); n != 0 {
 		t.Fatalf("%d findings from unresolved traffic on a clean origin", n)
 	}
+	// It must not be written into the baseline either, or the first contact
+	// after a DNS outage would look like a destination we already know.
+	if s.HasOutboundRemote("/usr/bin/curl") {
+		t.Fatal("unresolved traffic was recorded as outbound history")
+	}
+}
+
+func TestClassifiedLaterStillFires(t *testing.T) {
+	s, c, now := testCollector(t, 0)
+	addProc(s, "g1", "/usr/bin/curl", 0, now)
+	key := flowKey("g1", "203.0.113.5", 443, "TCP")
+	s.UpsertFlow(Flow{
+		Key: key, ProcessGUID: "g1", RemoteIP: "203.0.113.5", RemotePort: 443,
+		Proto: "TCP", Direction: "OUTBOUND", FirstSeen: now, LastSeen: now,
+	})
+
+	c.evaluate(now)
+	if n := len(s.Snapshot(now, false, false).Findings); n != 0 {
+		t.Fatalf("%d findings before the lookup answered", n)
+	}
+
+	// The answer lands; the next pass has to judge it.
+	s.EnrichFlow(key, ASNInfo{ASN: 24940, Org: "Hetzner", Country: "DE"})
+	c.evaluate(now)
+	if _, ok := findingsByKind(s, now)[KindFirstNetwork]; !ok {
+		t.Fatal("a flow classified after its first pass was never judged")
+	}
 }
