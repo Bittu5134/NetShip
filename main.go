@@ -45,7 +45,7 @@ func run() error {
 		return fmt.Errorf("cannot listen on %s (see %s): %w", cfg.Listen, cfgPath, err)
 	}
 
-	fmt.Printf("%s\n\n  dashboard  http://%s\n  config     %s\n  baseline   %s (%d binaries)\n  poll       every %s, silent for the first %s\n\n",
+	fmt.Printf("%s\n\n  dashboard  http://%s\n  config     %s\n  baseline   %s (%d binaries)\n  poll       every %s, baseline for the first %s\n\n",
 		banner, cfg.Listen, cfgPath, cfg.DataDir, store.Baselines(), cfg.Interval, cfg.Learning)
 
 	app := netship.NewApp(store, enr, ctx, cfg.IntervalDuration(), cfg.LearningDuration(), cfg.Enrich)
