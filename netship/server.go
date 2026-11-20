@@ -8,6 +8,7 @@ import (
 	"io/fs"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"sync"
@@ -44,6 +45,7 @@ type App struct {
 	mu         sync.Mutex
 	baseCtx    context.Context
 	cancel     context.CancelFunc
+	done       chan struct{}
 	running    bool
 	runStarted time.Time
 	gen        int // a stale watcher goroutine must not clear a newer one's state
@@ -76,10 +78,13 @@ func (a *App) start() bool {
 	gen := a.gen
 	a.running = true
 	a.runStarted = time.Now()
+	done := make(chan struct{})
+	a.done = done
 
 	col := NewCollector(a.store, a.enr, a.interval, a.learning)
 	col.OnFinding = PrintFinding
 	go func() {
+		defer close(done)
 		// start -> stop -> start leaves the old goroutine's final save racing
 		// the new collector. Without the generation check the stale one clears
 		// running and a third watcher gets to spawn.
@@ -99,12 +104,26 @@ func (a *App) start() bool {
 
 func (a *App) stop() bool {
 	a.mu.Lock()
-	defer a.mu.Unlock()
 	if !a.running || a.cancel == nil {
+		a.mu.Unlock()
 		return false
 	}
 	a.cancel()
+	done := a.done
+	a.mu.Unlock()
+
+	// Wait for the goroutine to leave its tick, or a stop followed by a start
+	// ends up with two collectors writing the same store.
+	if done != nil {
+		select {
+		case <-done:
+		case <-time.After(10 * time.Second):
+		}
+	}
+
+	a.mu.Lock()
 	a.running = false
+	a.mu.Unlock()
 	return true
 }
 
@@ -160,10 +179,10 @@ func (a *App) Serve(ln net.Listener) error {
 	mux := http.NewServeMux()
 	mux.Handle("/", http.FileServer(http.FS(sub)))
 	mux.HandleFunc("/api/state", a.handleState)
-	mux.HandleFunc("/api/scan/start", a.handleStart)
-	mux.HandleFunc("/api/scan/stop", a.handleStop)
-	mux.HandleFunc("/api/demo/start", a.handleDemoStart)
-	mux.HandleFunc("/api/demo/stop", a.handleDemoStop)
+	mux.HandleFunc("/api/scan/start", a.post(a.handleStart))
+	mux.HandleFunc("/api/scan/stop", a.post(a.handleStop))
+	mux.HandleFunc("/api/demo/start", a.post(a.handleDemoStart))
+	mux.HandleFunc("/api/demo/stop", a.post(a.handleDemoStop))
 	mux.HandleFunc("/api/health", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "ok"})
 	})
@@ -176,6 +195,32 @@ func (a *App) Serve(ln net.Listener) error {
 
 	a.start()
 	return srv.Serve(ln)
+}
+
+// Every mutating route goes through here. A page in another tab can POST to
+// 127.0.0.1 as easily as you can, and a watcher a drive by tab can switch off
+// is not much of a watcher.
+func (a *App) post(fn http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+			return
+		}
+		if !sameOrigin(r) {
+			http.Error(w, "cross origin request", http.StatusForbidden)
+			return
+		}
+		fn(w, r)
+	}
+}
+
+func sameOrigin(r *http.Request) bool {
+	origin := r.Header.Get("Origin")
+	if origin == "" {
+		return true // curl, or this page posting without the header
+	}
+	u, err := url.Parse(origin)
+	return err == nil && u.Host == r.Host
 }
 
 func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
@@ -201,10 +246,6 @@ func (a *App) handleState(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	if a.start() {
 		writeJSON(w, http.StatusOK, map[string]string{"status": "started"})
 		return
@@ -213,10 +254,6 @@ func (a *App) handleStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	if a.stop() {
 		_ = a.store.Save()
 		writeJSON(w, http.StatusOK, map[string]string{"status": "stopped"})
@@ -226,10 +263,6 @@ func (a *App) handleStop(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleDemoStart(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	a.stop()
 	a.mu.Lock()
 	a.demoOn = true
@@ -238,10 +271,6 @@ func (a *App) handleDemoStart(w http.ResponseWriter, r *http.Request) {
 }
 
 func (a *App) handleDemoStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	a.exitDemo()
 	// Leaving the demo leaves the watcher stopped on purpose: whether this
 	// machine gets inspected again is the user's call.
