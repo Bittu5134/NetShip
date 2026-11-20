@@ -10,7 +10,7 @@
 
 A network monitor that shows you every connection is a log you stop reading. netship keeps one baseline per executable: every remote endpoint that binary has ever reached. When a binary goes somewhere new, you get a case. The rest of the time it does nothing.
 
-It is one Go binary that reads the socket table and `/proc`. Nothing to install alongside it, and it never needs root.
+It is one Go binary that reads the socket table and the process table. Nothing to install alongside it, and it never needs root.
 
 ## How it works
 
@@ -107,4 +107,4 @@ Severity stacks the facts about one process: an untrusted origin plus a first ev
 - A very large baseline takes a moment to load before the dashboard has anything to show.
 - The demo store is seeded once per process and thrown away on exit, so the charts always start from the same place.
 - On a machine with many short-lived processes, the baseline file grows one key per executable until the 90 day TTL catches up.
-- Written and tested on Linux. The socket table comes from gopsutil, so macOS should be fine, and Windows has not been tried at all.
+- Linux only in practice. On macOS gopsutil builds the socket table from `lsof` and leaves the process id at 0, so every connection is dropped as unattributable and nothing is ever reported. Windows compiles and has a real pid source, but it has not been run.
