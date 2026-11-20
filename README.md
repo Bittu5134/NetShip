@@ -1,29 +1,32 @@
+<div align="center">
+
 # netship
 
-Watches this machine's outbound connections and stays quiet until something is
-new for the binary making them.
+**A process-level egress monitor that stays quiet until something actually changes.**
 
-It is not a connection log. It remembers, per executable, every remote endpoint
-that binary has ever been seen talking to, and then only speaks up when
-something it has never seen before happens:
+<img src="screenshots/cases.png" width="880" alt="netship cases dashboard">
 
-```
-HIGH    install.js (pid 4412, npm -> node)
-        Download-and-execute shaped command line
-        · first ever outbound connection: 203.0.113.9:443 · NL · Unmanaged Ltd
-        · runs from a temporary directory · runs from a package install directory
+</div>
 
-LOW     firefox (pid 2210)
-        New destination for firefox: 192.0.2.51:443 · BR · Claro NXT Telecom
-        · baseline for this executable goes back to an earlier session
-```
+A network monitor that shows you every connection is a log you stop reading. netship keeps one baseline per executable: every remote endpoint that binary has ever reached. When a binary goes somewhere new, you get a case. The rest of the time it does nothing.
 
-No root, no agent, no account, no flags. One binary and a five line JSON file.
+One binary, no root, no agent, and no flags to learn. If you can build Go, you can run it.
 
-## run
+## How It Works
+
+- It polls the socket table every 2 seconds and throws most of it away: its own sockets, sockets with no owning process, loopback, private addresses, and the teardown states.
+- Each socket is attributed to its executable and process start time, so a browser restarted forty times is one subject, not forty.
+- Every remote is looked up over plain DNS (Team Cymru). If the ASN belongs to a cloud or CDN provider the contact is dropped before anything is stored, and the dashboard counts how much went that way, so you can see the filter working.
+- Whatever survives is compared against `baseline.json`.
+- The difference is the finding. Only the difference.
+
+The numbers this came from: one minute of ordinary desktop use produced 356 rows, 70 of them sockets that had already closed, 69 with no owning process, and zero findings.
+
+## Quickstart
 
 ```bash
-go build -o netship.bin .    # Go 1.26+
+# Build (needs Go 1.26 or newer)
+go build -o netship.bin .
 ./netship.bin
 ```
 
@@ -36,17 +39,20 @@ netship - what is new on this machine's network edge
   poll       every 2s, silent for the first 5m
 ```
 
-Open the URL. Start and Stop control the watcher. Demo puts a synthetic case
-list in front of you without touching this machine: three made up cases on
-documentation addresses, with a banner saying so.
+Open the URL and press **Start**. The first 5 minutes are silent on purpose, that is the baseline filling up. Quiet after that is also normal, and an empty case list is the healthy state on a laptop.
 
-The first `learning` window is silent because it is filling the baseline, not
-because it is broken. Quiet after that is also normal. An empty case list is
-the healthy state on a laptop.
+> [!NOTE]
+> **Demo** seeds a throwaway store with three fake cases on documentation addresses (RFC 5737), so you can see what a finding looks like without waiting for one on your own machine. The watcher does not run in demo mode.
 
-## config
+## The Map
 
-`~/.config/netship/config.json`, written on first run:
+The map view plots one dot per contacted country, sized by flow count. The land is a bundled 2 degree mask (180 by 90, bit packed) and the positions come from a table of 244 country centroids, both shipped as plain JS. No tile server, no map library, no request to anything, so it works with the network off.
+
+<img src="screenshots/map.png" width="880" alt="netship network map">
+
+## Config
+
+`~/.config/netship/config.json`, written with these defaults on first run:
 
 ```json
 {
@@ -58,80 +64,47 @@ the healthy state on a laptop.
 }
 ```
 
-Missing fields stay default, so a partial file is fine. `enrich: false` turns
-off the ASN lookups and the tool still works, it just stops knowing which
-destinations are cloud infrastructure.
+- `listen`: bound to loopback on purpose. This dashboard lists your process names, command lines, usernames and destinations, and it has no authentication.
+- `interval`: how often the socket table is read. Below 1s it costs more CPU than it buys.
+- `learning`: how long to stay silent at startup while the baseline fills.
+- `enrich`: `false` turns off the DNS lookups. Without it, nothing can be classified as a CDN, so the tool still works but reports far less.
 
-To forget everything it has learned:
+Missing keys keep their defaults, so a partial file is fine. Deleting the file re-creates it.
+
+## Reset
+
+Forget everything it has learned:
 
 ```bash
 rm ~/.local/share/netship/baseline.json
 ```
 
-Uninstalling is deleting the binary.
+## Findings
 
-## why it exists
-
-Every network monitor I tried died the same way: it showed me everything and I
-read nothing. One minute of ordinary desktop use produced 356 rows, 70 of them
-sockets that had already closed and 69 with no owning process, and not one
-finding, while scoring a torrent client 20/100 for being busy.
-
-So this stores state instead of events: one row per binary and remote, one card
-per process, and output only when the pair is new. A browser talking to Fastly
-is not a finding. Dropping cloud and CDN traffic before it is stored removes
-most of the noise, and the suppressed counter in the dashboard is the number
-that got thrown away, so the filter is visible instead of invisible.
-
-## how it works
-
-1. Poll the socket table every `interval`, skipping itself, sockets with no
-   owner, loopback and private addresses, and teardown states.
-2. Name each socket's process and key it on executable plus start time, so a
-   browser restarted forty times is one subject.
-3. Look up each remote's ASN over plain DNS (Team Cymru). No HTTP, no key, no
-   third party learning what you resolve. Cloud and CDN ASNs stop here.
-4. Compare what is left against `baseline.json`.
-5. Report the difference, on stdout and in the dashboard.
-
-## findings
-
-| kind | severity | when |
-|---|---|---|
-| `SUSPICIOUS_CMD` | high | the command line looks like download and execute: `curl ... \| sh`, `base64 -d`, `/dev/tcp/`, `nc -e` |
-| `FIRST_NETWORK` | medium, high if the origin is bad | an executable with no baseline makes its first outbound connection |
-| `NEW_DESTINATION` | low, medium from a bad origin | a known binary talks to a non cloud endpoint it has never used |
-| `RISKY_ORIGIN` | medium | something from `/tmp`, `Downloads`, `node_modules`, or a binary written in the last day goes out |
-| `NEW_LISTENER` | low | a new binary binds a port, or any port from a bad origin |
+| kind | severity | fires when |
+| --- | --- | --- |
+| `SUSPICIOUS_CMD` | high | the command line looks like download and execute: `curl ... \| sh`, `base64 -d`, `/dev/tcp/`, `nc -e`, PowerShell `iex` |
+| `FIRST_NETWORK` | medium, high from a bad origin | an executable with no baseline makes its first outbound connection |
+| `NEW_DESTINATION` | low, medium from a bad origin | a known binary talks to a non-cloud endpoint it has never used |
+| `RISKY_ORIGIN` | medium | something from `/tmp`, `Downloads` or `node_modules`, or a binary edited in the last day, goes out |
+| `NEW_LISTENER` | low | a new binary binds a port reachable off loopback, or any port from a bad origin |
 | `FANOUT` | medium | one process reaches 8 or more new destinations inside a minute |
 
-Severity comes from combining facts about the same process, not from adding
-points until a number looks scary.
+Severity comes from combining facts about the same process, not from adding points until the number looks scary.
 
-## what it cannot do
+## The Bits It Can't Do
 
-- Short-lived processes are invisible. At 2s polling a `curl` that lives 300ms
-  is usually missed, and if it exits before attribution there is nothing to
-  name.
-- No byte counters, so no volume or exfiltration detection. The socket table
-  does not have them.
-- No names and no payload. IPs only, no SNI, no DNS sniffing.
-- Without root it sees your processes only.
-- Whatever was already running before the first scan is normal. Delete
-  `baseline.json` if you think that happened.
-- Anything that wants to kill it can.
+- **Short-lived processes.** At 2s polling, a `curl` that lives 300ms is usually missed, and if it exits before attribution there is nothing to name.
+- **Volume.** The socket table has no byte counters, so there is no exfiltration detection.
+- **Names and payloads.** IPs only, no SNI, no DNS sniffing, no content.
+- **Other users' processes.** Without root it sees yours.
+- **Cold start.** Anything already running before the first scan is normal by definition. Reset the baseline if you think that happened.
+- **Resistance.** Anything that wants to kill it can.
 
-## known issues
+## Known Issues
 
-- The map draws every flow on the same canvas, so a few hundred destinations
-  is fine and a few thousand is not.
-- Restarting with a big baseline takes a moment to load before the dashboard
-  has anything to show.
-- The demo store is seeded on first use and thrown away on exit, so charts in
-  demo mode always start at the same place.
-
-## layout
-
-`main.go` is the shell: config, listener, signal handling. Everything else is
-the `netship` package, including the dashboard, which is embedded and has no
-build step.
+- The map draws every country on one canvas. A few hundred destinations is fine, a few thousand is not.
+- A very large baseline takes a moment to load before the dashboard has anything to show.
+- The demo store is seeded once per process and thrown away on exit, so the charts always start from the same place.
+- On a machine with many short-lived processes, the baseline file grows one key per executable until the 90 day TTL catches up.
+- Written and tested on Linux. The socket table comes from gopsutil, so macOS should be fine, and Windows has not been tried at all.
