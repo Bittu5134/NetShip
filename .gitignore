@@ -1,6 +1,3 @@
-netship.jsonl
-data/*
-!data/malicious_hashes.txt
 netship.bin
 .wakatime-project
 .pi/
