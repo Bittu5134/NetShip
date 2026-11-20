@@ -1,30 +1,148 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="utf-8">
-<title>netship</title>
-<style>
-  body { font: 14px/1.5 system-ui, sans-serif; margin: 48px auto; max-width: 760px; color: #222; }
-  pre { background: #f4f4f4; padding: 12px; overflow: auto; }
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <title>netship — outbound edge baseline</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<h1>netship</h1>
-<p>Cases land here once something on this machine does something new.</p>
-<button id="start">start</button>
-<button id="stop">stop</button>
-<pre id="out">loading...</pre>
-<script>
-const out = document.getElementById('out');
-const post = (url) => fetch(url, { method: 'POST' }).then(load);
-async function load() {
-  const d = await fetch('/api/state').then((r) => r.json());
-  out.textContent = JSON.stringify({ running: d.running, stats: d.stats, cases: d.cases }, null, 2);
-}
-document.getElementById('start').onclick = () => post('/api/scan/start');
-document.getElementById('stop').onclick = () => post('/api/scan/stop');
-load();
-setInterval(load, 5000);
-</script>
+
+<header class="hdr">
+  <div class="hdr-inner">
+    <a class="brand" href="#cases">
+      <svg class="brand-mark" viewBox="0 0 24 24" aria-hidden="true">
+        <circle cx="12" cy="12" r="9"></circle>
+        <circle cx="12" cy="12" r="4"></circle>
+        <path d="M12 3v3.6M12 17.4V21M3 12h3.6M17.4 12H21"></path>
+      </svg>
+      <span class="brand-name">netship</span>
+    </a>
+
+    <nav class="tabs" aria-label="Views">
+      <button class="tab is-on" data-view="cases" type="button">
+        Cases <span class="tab-count" id="n-cases">0</span>
+      </button>
+      <button class="tab" data-view="processes" type="button">
+        Processes <span class="tab-count" id="n-proc">0</span>
+      </button>
+      <button class="tab" data-view="destinations" type="button">
+        Destinations <span class="tab-count" id="n-dest">0</span>
+      </button>
+      <button class="tab" data-view="map" type="button">
+        Map <span class="tab-count" id="n-map">0</span>
+      </button>
+    </nav>
+
+    <div class="hdr-right">
+      <div class="search">
+        <label class="vh" for="q">Search</label>
+        <svg class="search-icon" viewBox="0 0 24 24" aria-hidden="true">
+          <circle cx="11" cy="11" r="6.5"></circle><path d="M16 16l4.5 4.5"></path>
+        </svg>
+        <input id="q" type="search" autocomplete="off" spellcheck="false" placeholder="Search">
+      </div>
+      <button id="export" class="icon-btn" type="button" title="Export this view as JSON" aria-label="Export">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3v11M7.5 9.5L12 14l4.5-4.5M4 18.5h16"></path></svg>
+      </button>
+      <button id="demo" class="btn" type="button">Demo</button>
+      <button id="toggle" class="btn btn-primary" type="button">Pause</button>
+    </div>
+  </div>
+</header>
+
+<div class="subbar">
+  <div class="subbar-inner">
+    <span class="live"><span class="live-dot" id="live-dot"></span><span id="live-label">connecting</span></span>
+    <span class="subbar-sep"></span>
+    <span>every <b id="s-interval">2s</b></span>
+    <span class="subbar-sep"></span>
+    <span id="s-learning">baseline warm-up</span>
+    <span class="subbar-sep"></span>
+    <span id="s-stamp">waiting for first poll</span>
+    <span class="subbar-right" id="s-session"></span>
+  </div>
+</div>
+
+<div id="demo-banner" class="demo-banner" hidden>
+  <span class="demo-tag">demo</span>
+  <span>Synthetic cases on documentation addresses. Nothing on this machine is being inspected.</span>
+  <button id="demo-exit" class="btn btn-small" type="button">Exit demo</button>
+</div>
+
+<main class="wrap">
+
+  <section class="card hero">
+    <div class="tiles">
+      <div class="tile">
+        <span class="tile-label">findings</span>
+        <span class="tile-value" id="t-find">0</span>
+        <span class="tile-sub" id="t-find-sub">—</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">cases</span>
+        <span class="tile-value" id="t-cases">0</span>
+        <span class="tile-sub">one card per process</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">processes watched</span>
+        <span class="tile-value" id="t-proc">0</span>
+        <span class="tile-sub" id="t-proc-sub">with sockets</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">destinations</span>
+        <span class="tile-value" id="t-flows">0</span>
+        <span class="tile-sub">after CDN filter</span>
+      </div>
+      <div class="tile">
+        <span class="tile-label">suppressed</span>
+        <span class="tile-value" id="t-supp">0</span>
+        <span class="tile-sub">cloud / CDN contacts</span>
+      </div>
+    </div>
+  </section>
+
+  <div class="grid">
+    <div class="col-main">
+      <div class="view-head">
+        <h1 id="view-title">Cases</h1>
+        <div class="chips" role="group" aria-label="Severity filter">
+          <button class="chip is-on" data-sev="3" type="button"><span class="dot dot-high"></span>high</button>
+          <button class="chip is-on" data-sev="2" type="button"><span class="dot dot-med"></span>medium</button>
+          <button class="chip is-on" data-sev="1" type="button"><span class="dot dot-low"></span>low</button>
+        </div>
+        <div class="view-head-right">
+          <label class="vh" for="sort">Sort</label>
+          <select id="sort" class="select">
+            <option value="severity">Severity</option>
+            <option value="recent">Most recent</option>
+            <option value="name">Name</option>
+            <option value="flows">Destinations</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="view"></div>
+
+      <div id="empty" class="empty" hidden>
+        <p class="empty-title" id="empty-title">Nothing new</p>
+        <p class="empty-body" id="empty-body"></p>
+      </div>
+    </div>
+
+    <aside class="col-side" id="aside"></aside>
+  </div>
+</main>
+
+<footer class="foot">
+  <span><b>netship</b> — what is new on this machine's outbound network edge</span>
+  <span id="foot-right">baseline saved on stop and every 30s</span>
+</footer>
+
+<script src="app.js"></script>
+<script src="world-mask.js"></script>
+<script src="centroids.js"></script>
+<script src="map.js"></script>
 </body>
 </html>
