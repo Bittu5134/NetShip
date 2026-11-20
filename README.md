@@ -30,6 +30,8 @@ go build -o netship.bin .
 ./netship.bin
 ```
 
+`./build.sh` cross compiles linux, macOS and Windows into `dist/` if you want the other platforms, and tagging `v*` makes CI publish those as a release.
+
 ```
 netship - what is new on this machine's network edge
 
@@ -107,4 +109,4 @@ Severity stacks the facts about one process: an untrusted origin plus a first ev
 - A very large baseline takes a moment to load before the dashboard has anything to show.
 - The demo store is seeded once per process and thrown away on exit, so the charts always start from the same place.
 - On a machine with many short-lived processes, the baseline file grows one key per executable until the 90 day TTL catches up.
-- Linux only in practice. On macOS gopsutil builds the socket table from `lsof` and leaves the process id at 0, so every connection is dropped as unattributable and nothing is ever reported. Windows compiles and has a real pid source, but it has not been run.
+- Tested on Linux. On macOS the socket table comes from `lsof`, because gopsutil hands back pid 0 there and everything looked unattributable; that path is written but has not been run on a real Mac. Windows compiles and has a real pid source, and it has not been run either.
