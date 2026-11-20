@@ -235,15 +235,9 @@ func (c *Collector) evaluate(now time.Time) {
 		if f.Direction == "LISTEN" {
 			c.evaluated[f.Key] = true
 			listenKey := "listen:" + itoa(f.RemotePort) + "/" + strings.ToLower(f.Proto)
-			known, seen, _ := c.store.LookupBinary(proc.Key(), listenKey)
+			_, seen, _ := c.store.LookupBinary(proc.Key(), listenKey)
 			c.store.Remember(proc.Key(), proc.Name, listenKey, now)
 			if learning || seen {
-				continue
-			}
-			// Every app on a laptop listens on something, so an open port is
-			// not a finding by itself. A new port from a known binary, or any
-			// port from a bad location, is.
-			if !known && proc.OriginRisk < 40 {
 				continue
 			}
 			sev := SevLow
@@ -604,8 +598,13 @@ func isNoise(conn psnet.ConnectionStat, self int32) bool {
 	return false
 }
 
+// A bound socket with no peer is a listener, but only for TCP. An unconnected
+// UDP socket looks the same and is usually a client that has not sent yet.
 func isListener(conn psnet.ConnectionStat) bool {
-	return conn.Status == "LISTEN" || (conn.Raddr.IP == "" && conn.Raddr.Port == 0 && conn.Laddr.Port != 0)
+	if conn.Status == "LISTEN" {
+		return true
+	}
+	return conn.Type == 1 && conn.Raddr.IP == "" && conn.Raddr.Port == 0 && conn.Laddr.Port != 0
 }
 
 // One goroutine, one loop, no subprocess and nothing to supervise.
