@@ -87,9 +87,9 @@ rm ~/.local/share/netship/baseline.json
 | --- | --- | --- |
 | `SUSPICIOUS_CMD` | high | the command line looks like download and execute: `curl ... \| sh`, `base64 -d`, `/dev/tcp/`, `nc -e`, PowerShell `iex` |
 | `FIRST_NETWORK` | medium, high from a bad origin | an executable with no baseline makes its first outbound connection |
-| `NEW_DESTINATION` | low, medium from a bad origin | a known binary talks to a non-cloud endpoint it has never used |
+| `NEW_DESTINATION` | low, medium from a bad origin | a known binary talks to a non-cloud endpoint it has never used. Every new remote gets its own finding |
 | `RISKY_ORIGIN` | medium | something from `/tmp`, `Downloads` or `node_modules`, or a binary edited in the last day, goes out |
-| `NEW_LISTENER` | low | a new binary binds a port reachable off loopback, or any port from a bad origin |
+| `NEW_LISTENER` | low, medium from a bad origin | a binary binds a port it has never bound before, off loopback. Unconnected UDP sockets are not counted |
 | `FANOUT` | medium | one process reaches 8 or more new destinations inside a minute |
 
 Severity stacks the facts about one process: an untrusted origin plus a first ever connection is high, the same connection from `/usr/bin` is low.

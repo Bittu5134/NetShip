@@ -178,7 +178,7 @@ func TestFindingsSurviveRestart(t *testing.T) {
 	s.AddFinding(Finding{
 		ID: "f1", Kind: KindFirstNetwork, Severity: SevMedium,
 		ProcessGUID: "g1", ProcessName: "curl", Title: "First ever outbound connection: curl",
-		Evidence: []string{"first outbound contact from this executable"},
+		Evidence:  []string{"first outbound contact from this executable"},
 		FirstSeen: now, LastSeen: now, Count: 1,
 	})
 	if err := s.Save(); err != nil {
