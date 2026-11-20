@@ -340,8 +340,7 @@ function renderCases(rows) {
   return `<section class="card list-card">
       <div class="card-head">
         <h2 class="card-title">Cases</h2>
-        <span class="card-sub">one card per process that broke the baseline</span>
-        <span class="card-head-right">${rows.length} shown</span>
+        <span class="card-sub">one per process with findings</span>
       </div>
       <div class="cols"><span>severity</span><span>process / finding</span><span class="c-age">last seen</span></div>
       ${body}
@@ -402,8 +401,7 @@ function renderProcesses(rows) {
   return `<section class="card list-card">
     <div class="card-head">
       <h2 class="card-title">Processes</h2>
-      <span class="card-sub">everything that owned a socket this session</span>
-      <span class="card-head-right">${rows.length} shown</span>
+      <span class="card-sub">every process that owned a socket</span>
     </div>
     <div class="table-wrap"><table>
       <thead><tr>
@@ -436,7 +434,7 @@ function renderDestinations(rows) {
   return `<section class="card list-card">
     <div class="card-head">
       <h2 class="card-title">Destinations</h2>
-      <span class="card-sub">endpoints that survived the CDN filter</span>
+      <span class="card-sub">endpoints left after the CDN drop</span>
       <span class="card-head-right">${rows.length} organisations</span>
     </div>
     <div class="table-wrap"><table>
@@ -463,7 +461,7 @@ function renderAside() {
 
   const donutCard = sideCard(
     'Severity',
-    total ? num(total) + ' findings' : 'quiet',
+    total ? num(total) + ' findings' : 'none',
     total
       ? donut(
           [
@@ -474,7 +472,7 @@ function renderAside() {
           total,
           'findings'
         )
-      : `<p class="card-sub" style="padding-bottom:4px">Nothing has broken the baseline yet.</p>`
+      : `<p class="card-sub" style="padding-bottom:4px">Nothing has fired yet.</p>`
   );
 
   let middle = '';
@@ -486,10 +484,10 @@ function renderAside() {
       .map((r) => ({ name: r.name, value: r.raw.origin_risk }));
     middle = sideCard(
       'Riskiest origins',
-      'where binaries live',
+      'by origin risk',
       items.length
         ? `<div class="bars">${bars(items, ['#e85d75', '#f7b731', '#b368d9', '#3db4f2'])}</div>`
-        : `<p class="card-sub">No process is running from a suspicious location.</p>`
+        : `<p class="card-sub">No process is running from a bad location.</p>`
     );
   } else if (state.view === 'destinations' || state.view === 'map') {
     const byCountry = new Map();
@@ -506,7 +504,7 @@ function renderAside() {
       'by flow count',
       items.length
         ? `<div class="bars">${bars(items, ['#3db4f2', '#4fd1c5', '#b368d9', '#7bd555'])}</div>`
-        : `<p class="card-sub">No geolocated destinations yet.</p>`
+        : `<p class="card-sub">No country data yet.</p>`
     );
   } else {
     const items = destinationGroups()
@@ -517,7 +515,7 @@ function renderAside() {
       'by flow count',
       items.length
         ? `<div class="bars">${bars(items, ['#3db4f2', '#b368d9', '#4fd1c5', '#7bd555', '#f7b731', '#e85d75'])}</div>`
-        : `<p class="card-sub">No external destinations recorded.</p>`
+        : `<p class="card-sub">No destinations yet.</p>`
     );
   }
 
@@ -589,7 +587,7 @@ function socketsCard(d) {
   const ports = [...byPort.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6)
     .map(([p, v]) => ({ name: ':' + p, value: v, label: num(v) }));
   const total = tcp + udp;
-  return sideCard('Sockets', total ? num(total) + ' flows' : 'quiet',
+  return sideCard('Sockets', total ? num(total) + ' flows' : 'none',
     (ports.length
       ? `<div class="bars" style="margin-bottom:14px">${bars(ports, ['#3db4f2', '#4fd1c5', '#b368d9', '#7bd555', '#f7b731', '#e85d75'])}</div>`
       : '') +
@@ -639,10 +637,10 @@ function paintStatus() {
     : `updated ${age}s ago`;
 
   $('s-learning').textContent = d?.demo
-    ? 'demo: synthetic data'
+    ? 'demo, fake data'
     : d?.learning
-      ? 'warm-up: silent by design'
-      : 'warm-up: complete';
+      ? 'learning, staying quiet'
+      : 'baseline filled';
   $('s-session').textContent = d?.started_at ? `session ${clock(d.started_at)}` : 'session —';
 
   applyDemoState(!!d?.demo, !!d?.running);
@@ -675,21 +673,21 @@ function emptyState() {
     if (d.learning) {
       return [
         'Learning',
-        'netship is recording where each binary is allowed to talk. It stays silent during the warm-up window, then reports only what is new.',
+        'Recording where each binary is allowed to talk. Quiet until the warm-up ends.',
       ];
     }
     return [
       'Nothing new',
-      `Every one of the <b>${num(destinationGroups().reduce((n, g) => n + g.ipCount, 0))}</b> destinations this machine has contacted is already in the baseline, and <b>${num(
+      `All <b>${num(destinationGroups().reduce((n, g) => n + g.ipCount, 0))}</b> destinations are already in the baseline, and <b>${num(
         d.stats?.suppressed
-      )}</b> cloud/CDN contacts were dropped without being stored.<br><br>This is the healthy state. Run <code>netship demo</code> to see what a finding looks like.`,
+      )}</b> cloud and CDN contacts were dropped. Nothing here needs you. Press Demo to see what a finding looks like.`,
     ];
   }
   if (state.view === 'processes') {
-    return ['Nothing watched yet', 'No sockets have been attributed. Start the watcher and wait for the next poll.'];
+    return ['Nothing watched yet', 'No sockets have been attributed. Start the watcher and wait for a poll.'];
   }
   if (state.view === 'map') {
-    return ['No external destinations recorded.', ''];
+    return ['Nothing to plot', 'No destination has a country yet.'];
   }
   return ['No destinations', 'Nothing has survived the CDN filter this session.'];
 }
@@ -697,10 +695,8 @@ function emptyState() {
 const NOTE = `<section class="card note-card">
     <span class="note-mark"></span>
     <p>
-      <b>What survives the filter.</b> Every external endpoint is classified by ASN before it is stored.
-      Traffic to cloud and CDN providers is counted in <b>suppressed</b> and then dropped, because a browser
-      talking to Fastly is not a finding. What remains is the part of the network edge specific to this
-      machine — the only part worth remembering.
+      Every endpoint is classified by ASN before it is stored. Cloud and CDN traffic is counted in
+      <b>suppressed</b> and then dropped, since a browser talking to Fastly is not interesting.
     </p>
   </section>`;
 
