@@ -10,7 +10,7 @@
 
 A network monitor that shows you every connection is a log you stop reading. netship keeps one baseline per executable: every remote endpoint that binary has ever reached. When a binary goes somewhere new, you get a case. The rest of the time it does nothing.
 
-One binary, no root, no agent, and no flags to learn. If you can build Go, you can run it.
+It is one Go binary. All it reads is the socket table, so there is no agent to install, and it never needs root.
 
 ## How It Works
 
@@ -18,7 +18,7 @@ One binary, no root, no agent, and no flags to learn. If you can build Go, you c
 - Each socket is attributed to its executable and process start time, so a browser restarted forty times is one subject, not forty.
 - Every remote is looked up over plain DNS (Team Cymru). If the ASN belongs to a cloud or CDN provider the contact is dropped before anything is stored, and the dashboard counts how much went that way, so you can see the filter working.
 - Whatever survives is compared against `baseline.json`.
-- The difference is the finding. Only the difference.
+- Only the difference becomes a finding.
 
 The numbers this came from: one minute of ordinary desktop use produced 356 rows, 70 of them sockets that had already closed, 69 with no owning process, and zero findings.
 
@@ -46,7 +46,7 @@ Open the URL and press **Start**. The first 5 minutes are silent on purpose, tha
 
 ## The Map
 
-The map view plots one dot per contacted country, sized by flow count. The land is a bundled 2 degree mask (180 by 90, bit packed) and the positions come from a table of 244 country centroids, both shipped as plain JS. No tile server, no map library, no request to anything, so it works with the network off.
+The map view plots one dot per contacted country, sized by flow count. The land is a bundled 2 degree mask (180 by 90, bit packed) and the positions come from a table of 244 country centroids, both shipped as plain JS, so it renders with the network off.
 
 <img src="screenshots/map.png" width="880" alt="netship network map">
 
@@ -96,7 +96,7 @@ Severity comes from combining facts about the same process, not from adding poin
 
 - **Short-lived processes.** At 2s polling, a `curl` that lives 300ms is usually missed, and if it exits before attribution there is nothing to name.
 - **Volume.** The socket table has no byte counters, so there is no exfiltration detection.
-- **Names and payloads.** IPs only, no SNI, no DNS sniffing, no content.
+- **Names and payloads.** It sees the IP and the port, because that is all the socket table holds. The payload is never read.
 - **Other users' processes.** Without root it sees yours.
 - **Cold start.** Anything already running before the first scan is normal by definition. Reset the baseline if you think that happened.
 - **Resistance.** Anything that wants to kill it can.
