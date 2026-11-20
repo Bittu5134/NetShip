@@ -800,10 +800,11 @@ async function control(path, btn) {
   btn.disabled = true;
   try {
     await fetch(path, { method: 'POST' });
-  } finally {
-    btn.disabled = false;
-    await poll();
+  } catch {
+    state.failing = true;
   }
+  btn.disabled = false;
+  poll();
 }
 
 // interaction

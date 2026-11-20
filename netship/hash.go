@@ -57,8 +57,18 @@ func (h *Hasher) Request(exe string) {
 		return
 	}
 
-	// Stat here rather than in the worker. Sockets, directories and paths with
-	// " (deleted)" in them are not work in the first place.
+	// Answer from the cache first. This is called for every socket on every
+	// poll, so the stat below only happens for paths we do not know yet.
+	h.mu.RLock()
+	_, known := h.cache[exe]
+	failed := h.failed[exe]
+	h.mu.RUnlock()
+	if known || failed {
+		return
+	}
+
+	// Sockets, directories and paths with " (deleted)" in them are not work in
+	// the first place.
 	st, err := os.Stat(exe)
 	if err != nil || !st.Mode().IsRegular() || st.Size() > hashMaxSize {
 		return
@@ -66,10 +76,6 @@ func (h *Hasher) Request(exe string) {
 
 	h.mu.Lock()
 	if _, ok := h.cache[exe]; ok {
-		h.mu.Unlock()
-		return
-	}
-	if h.failed[exe] {
 		h.mu.Unlock()
 		return
 	}
