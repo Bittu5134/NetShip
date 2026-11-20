@@ -30,7 +30,6 @@ type Collector struct {
 	meta      *metaCache
 	started   time.Time
 	evaluated map[string]bool        // flow key -> novelty already judged
-	announced map[string]bool        // processGUID|kind -> already reported
 	fanout    map[string][]time.Time // processGUID -> recent new-remote times
 }
 
@@ -45,7 +44,6 @@ func NewCollector(store *Store, enr *Enricher, interval, learning time.Duration)
 		meta:      newMetaCache(),
 		started:   time.Now(),
 		evaluated: map[string]bool{},
-		announced: map[string]bool{},
 		fanout:    map[string][]time.Time{},
 	}
 }
@@ -156,11 +154,6 @@ func (c *Collector) tick(ctx context.Context, now time.Time) error {
 		delete(c.evaluated, k)
 	}
 	for _, guid := range procGUIDs {
-		for k := range c.announced {
-			if strings.HasPrefix(k, guid+"|") {
-				delete(c.announced, k)
-			}
-		}
 		delete(c.fanout, guid)
 	}
 	for guid, times := range c.fanout {
@@ -364,13 +357,9 @@ func (c *Collector) evaluate(now time.Time) {
 	}
 }
 
-// Once per process and kind.
+// The store dedupes by finding id, so a second sighting only bumps the count.
+// Only genuinely new findings reach stdout.
 func (c *Collector) report(f Finding, proc Process) {
-	key := f.ProcessGUID + "|" + f.Kind
-	if c.announced[key] && f.Kind != KindFanout {
-		return
-	}
-	c.announced[key] = true
 	if c.store.AddFinding(f) && c.OnFinding != nil {
 		c.OnFinding(f)
 	}
