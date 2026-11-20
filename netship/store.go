@@ -43,8 +43,10 @@ type Binary struct {
 }
 
 type baselineFile struct {
-	Version  int                `json:"version"`
-	Binaries map[string]*Binary `json:"binaries"`
+	Version  int                 `json:"version"`
+	Binaries map[string]*Binary  `json:"binaries"`
+	Findings map[string]*Finding `json:"findings"`
+	Procs    map[string]*Process `json:"processes"`
 }
 
 func OpenStore(dir string) (*Store, error) {
@@ -86,6 +88,20 @@ func (s *Store) load() {
 		}
 		s.baseline[k] = v
 	}
+	// Findings come back so a restart does not blank the dashboard. Flows do
+	// not: they are live socket state, not memory.
+	for k, v := range bf.Findings {
+		if v == nil {
+			continue
+		}
+		s.findings[k] = v
+	}
+	for k, v := range bf.Procs {
+		if v == nil {
+			continue
+		}
+		s.procs[k] = v
+	}
 }
 
 // Save is called on a timer and on shutdown, never per event. An fsync per
@@ -108,6 +124,17 @@ func (s *Store) Save() error {
 			cp.Remotes[r] = true
 		}
 		bf.Binaries[k] = &cp
+	}
+	bf.Findings = make(map[string]*Finding, len(s.findings))
+	for k, v := range s.findings {
+		cp := *v
+		bf.Findings[k] = &cp
+	}
+	// Only so a restored finding still has a case to sit in.
+	bf.Procs = make(map[string]*Process, len(s.procs))
+	for k, v := range s.procs {
+		cp := *v
+		bf.Procs[k] = &cp
 	}
 	s.mu.RUnlock()
 
