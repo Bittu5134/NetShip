@@ -2,6 +2,7 @@ package netship
 
 import (
 	"context"
+	"net"
 	"os"
 	"regexp"
 	"strconv"
@@ -70,7 +71,6 @@ func (c *Collector) tick(ctx context.Context, now time.Time) error {
 			PPID:       meta.ppid,
 			Name:       meta.name,
 			Exe:        meta.exe,
-			Hash:       meta.hash,
 			Cmdline:    meta.cmdline,
 			Cwd:        meta.cwd,
 			User:       meta.user,
@@ -96,6 +96,11 @@ func (c *Collector) tick(ctx context.Context, now time.Time) error {
 		c.store.UpsertProcess(proc)
 
 		if isListener(conn) {
+			// A dev server on 127.0.0.1 is none of our business. 0.0.0.0 and
+			// :: are: other machines can reach those.
+			if isLoopbackAddr(conn.Laddr.IP) {
+				continue
+			}
 			c.store.UpsertFlow(Flow{
 				Key:         "listen|" + proc.GUID + "|" + strconv.Itoa(int(conn.Laddr.Port)) + "/" + protoOf(conn),
 				ProcessGUID: proc.GUID,
@@ -192,6 +197,15 @@ func (c *Collector) evaluate(now time.Time) {
 		// already bad.
 		unclassified := !f.Enriched
 		if unclassified {
+			// The lookup may have landed since the flow was stored. Apply it
+			// here, or a flow whose socket closed early stays unclassified.
+			if info, ok := c.enr.Cached(f.RemoteIP); ok {
+				c.store.EnrichFlow(f.Key, info)
+				f.Enriched, unclassified = true, false
+				f.ASN, f.Org, f.Country, f.Hosting = info.ASN, info.Org, info.Country, info.Hosting
+			}
+		}
+		if unclassified {
 			if now.Sub(f.FirstSeen) < unclassifiedGrace {
 				continue
 			}
@@ -247,7 +261,7 @@ func (c *Collector) evaluate(now time.Time) {
 		// known has to mean outbound history. A listener-only baseline row says
 		// nothing about that and would downgrade a first contact to
 		// NEW_DESTINATION.
-		known := c.hasOutboundBaseline(proc.Key())
+		known := c.store.HasOutboundRemote(proc.Key())
 		_, seenRemote, firstSeen := c.store.LookupBinary(proc.Key(), remoteKey)
 		c.evaluated[f.Key] = true
 		emitted := false
@@ -343,13 +357,6 @@ func (c *Collector) evaluate(now time.Time) {
 			}
 		}
 	}
-}
-
-// One poll, for tests and `netship why`.
-func (c *Collector) Once(ctx context.Context) error { return c.tick(ctx, time.Now()) }
-
-func (c *Collector) hasOutboundBaseline(key string) bool {
-	return c.store.HasOutboundRemote(key)
 }
 
 // Exactly once per process and kind. Dedupe lives here so the rules above stay
@@ -486,4 +493,11 @@ func hasDir(path string, dirs ...string) bool {
 		}
 	}
 	return false
+}
+
+// ParseIP returns nil for an address we could not read, and nil is not
+// loopback, which is the answer we want there.
+func isLoopbackAddr(ip string) bool {
+	p := net.ParseIP(ip)
+	return p != nil && p.IsLoopback()
 }
