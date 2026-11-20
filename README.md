@@ -2,7 +2,7 @@
 
 # netship
 
-**A process-level egress monitor that stays quiet until something actually changes.**
+**A process-level egress monitor that stays quiet until something changes.**
 
 <img src="screenshots/cases.png" width="880" alt="netship cases dashboard">
 
@@ -10,9 +10,9 @@
 
 A network monitor that shows you every connection is a log you stop reading. netship keeps one baseline per executable: every remote endpoint that binary has ever reached. When a binary goes somewhere new, you get a case. The rest of the time it does nothing.
 
-It is one Go binary. All it reads is the socket table, so there is no agent to install, and it never needs root.
+It is one Go binary that reads the socket table and `/proc`. Nothing to install alongside it, and it never needs root.
 
-## How It Works
+## How it works
 
 - It polls the socket table every 2 seconds and throws most of it away: its own sockets, sockets with no owning process, loopback, private addresses, and the teardown states.
 - Each socket is attributed to its executable and process start time, so a browser restarted forty times is one subject, not forty.
@@ -25,7 +25,7 @@ The numbers this came from: one minute of ordinary desktop use produced 356 rows
 ## Quickstart
 
 ```bash
-# Build (needs Go 1.26 or newer)
+# Build (needs Go 1.26.3 or newer)
 go build -o netship.bin .
 ./netship.bin
 ```
@@ -65,7 +65,7 @@ The map view plots one dot per contacted country, sized by flow count. The land 
 ```
 
 - `listen`: bound to loopback on purpose. This dashboard lists your process names, command lines, usernames and destinations, and it has no authentication.
-- `interval`: how often the socket table is read. Below 1s it costs more CPU than it buys.
+- `interval`: how often the socket table is read. Under a second it mostly re-reads the same sockets.
 - `learning`: how long to stay silent at startup while the baseline fills.
 - `enrich`: `false` turns off the DNS lookups. Without it, nothing can be classified as a CDN, so the tool still works but reports far less.
 
@@ -90,7 +90,7 @@ rm ~/.local/share/netship/baseline.json
 | `NEW_LISTENER` | low | a new binary binds a port reachable off loopback, or any port from a bad origin |
 | `FANOUT` | medium | one process reaches 8 or more new destinations inside a minute |
 
-Severity comes from combining facts about the same process, not from adding points until the number looks scary.
+Severity stacks the facts about one process: an untrusted origin plus a first ever connection is high, the same connection from `/usr/bin` is low.
 
 ## The Bits It Can't Do
 
@@ -101,7 +101,7 @@ Severity comes from combining facts about the same process, not from adding poin
 - **Cold start.** Anything already running before the first scan is normal by definition. Reset the baseline if you think that happened.
 - **Resistance.** Anything that wants to kill it can.
 
-## Known Issues
+## Known issues
 
 - The map draws every country on one canvas. A few hundred destinations is fine, a few thousand is not.
 - A very large baseline takes a moment to load before the dashboard has anything to show.
