@@ -3,6 +3,7 @@ package netship
 import (
 	"net/http"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -96,6 +97,43 @@ func TestNoiseFilter(t *testing.T) {
 	}
 	if isNoise(psnet.ConnectionStat{Pid: 10, Status: "SYN_SENT"}, me) {
 		t.Error("SYN_SENT is an attempt, keep it")
+	}
+}
+
+func TestHashFollowsTheFile(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "bin")
+	if err := os.WriteFile(path, []byte("one"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	h := NewHasher()
+	buf := make([]byte, 1024)
+
+	sum1, size1, mod1, ok := hashFile(path, buf)
+	if !ok {
+		t.Fatal("first hash failed")
+	}
+	h.store(path, sum1, size1, mod1, true)
+	if got, ok := h.Get(path); !ok || got != sum1 {
+		t.Fatalf("cached %q, want %q", got, sum1)
+	}
+
+	// Same size, same second: only the content differs, which is exactly the
+	// case a size check alone would miss.
+	if err := os.WriteFile(path, []byte("two"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sum2, size2, mod2, ok := hashFile(path, buf)
+	if !ok {
+		t.Fatal("second hash failed")
+	}
+	if sum2 == sum1 {
+		t.Fatal("the replaced file hashed the same")
+	}
+	h.store(path, sum2, size2, mod2, true)
+	if got, _ := h.Get(path); got != sum2 {
+		t.Fatalf("cache still holds %q after the file changed", got)
 	}
 }
 

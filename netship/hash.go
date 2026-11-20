@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 )
 
 const (
@@ -20,24 +21,38 @@ const (
 	hashCacheCap = 4096
 
 	hashChunkSize = 1 << 20
+
+	// How long a cached sum is trusted before the file is stat'ed again, so a
+	// binary replaced at the same path does not keep its old hash forever.
+	hashRecheck = time.Minute
+
+	// A permission error or a file that vanished is not permanent.
+	hashFailureTTL = 10 * time.Minute
 )
 
 // Hasher is a cache with one worker attached, same shape as Enricher. Callers
 // read Get and never wait.
 type Hasher struct {
 	mu       sync.RWMutex
-	cache    map[string]string
-	failed   map[string]bool
+	cache    map[string]hashEntry
+	failed   map[string]time.Time // path -> when the failure stops counting
 	inflight map[string]struct{}
 
 	queue chan string
 	once  sync.Once
 }
 
+type hashEntry struct {
+	sum     string
+	size    int64
+	mod     time.Time
+	checked time.Time
+}
+
 func NewHasher() *Hasher {
 	return &Hasher{
-		cache:    make(map[string]string),
-		failed:   make(map[string]bool),
+		cache:    make(map[string]hashEntry),
+		failed:   make(map[string]time.Time),
 		inflight: make(map[string]struct{}),
 		queue:    make(chan string, hashQueueDepth),
 	}
@@ -58,12 +73,17 @@ func (h *Hasher) Request(exe string) {
 	}
 
 	// Answer from the cache first. This is called for every socket on every
-	// poll, so the stat below only happens for paths we do not know yet.
+	// poll, so the stat only happens for a path we do not know, or one we have
+	// not looked at in a while.
 	h.mu.RLock()
-	_, known := h.cache[exe]
-	failed := h.failed[exe]
+	ent, known := h.cache[exe]
+	until, wasFailed := h.failed[exe]
 	h.mu.RUnlock()
-	if known || failed {
+
+	if known && time.Since(ent.checked) < hashRecheck {
+		return
+	}
+	if wasFailed && time.Now().Before(until) {
 		return
 	}
 
@@ -75,7 +95,9 @@ func (h *Hasher) Request(exe string) {
 	}
 
 	h.mu.Lock()
-	if _, ok := h.cache[exe]; ok {
+	if cur, ok := h.cache[exe]; ok && cur.size == st.Size() && cur.mod.Equal(st.ModTime()) {
+		cur.checked = time.Now()
+		h.cache[exe] = cur
 		h.mu.Unlock()
 		return
 	}
@@ -102,9 +124,9 @@ func (h *Hasher) Get(exe string) (string, bool) {
 		return "", false
 	}
 	h.mu.RLock()
-	sum, ok := h.cache[exe]
+	ent, ok := h.cache[exe]
 	h.mu.RUnlock()
-	return sum, ok
+	return ent.sum, ok
 }
 
 func (h *Hasher) worker(ctx context.Context) {
@@ -114,18 +136,18 @@ func (h *Hasher) worker(ctx context.Context) {
 		case <-ctx.Done():
 			return
 		case exe := <-h.queue:
-			sum, ok := hashFile(exe, buf)
-			h.store(exe, sum, ok)
+			sum, size, mod, ok := hashFile(exe, buf)
+			h.store(exe, sum, size, mod, ok)
 		}
 	}
 }
 
 // The only thing here that touches disk. A partial hash would be worse than no
 // hash, so anything that cannot be read to the end reports false.
-func hashFile(exe string, buf []byte) (string, bool) {
+func hashFile(exe string, buf []byte) (string, int64, time.Time, bool) {
 	f, err := os.Open(exe)
 	if err != nil {
-		return "", false
+		return "", 0, time.Time{}, false
 	}
 	defer f.Close()
 
@@ -133,34 +155,31 @@ func hashFile(exe string, buf []byte) (string, bool) {
 	// stat in Request and this read.
 	st, err := f.Stat()
 	if err != nil || !st.Mode().IsRegular() || st.Size() > hashMaxSize {
-		return "", false
+		return "", 0, time.Time{}, false
 	}
 
 	h := sha256.New()
 	if _, err := io.CopyBuffer(h, f, buf); err != nil {
-		return "", false
+		return "", 0, time.Time{}, false
 	}
-	return hex.EncodeToString(h.Sum(nil)), true
+	return hex.EncodeToString(h.Sum(nil)), st.Size(), st.ModTime(), true
 }
 
 // The in-flight mark is cleared here and only here, success or failure, so a
 // path is retried only after an attempt finished.
-func (h *Hasher) store(exe, sum string, ok bool) {
+func (h *Hasher) store(exe, sum string, size int64, mod time.Time, ok bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	delete(h.inflight, exe)
 
-	// Hashes never expire, they come from the content. Failures are kept apart
-	// so a permission error is not retried every tick and so Get stays one map
-	// read on the happy path.
 	if !ok {
-		h.failed[exe] = true
+		h.failed[exe] = time.Now().Add(hashFailureTTL)
 		return
 	}
 	if len(h.cache)+len(h.failed) >= hashCacheCap {
-		h.cache = make(map[string]string, hashCacheCap)
-		h.failed = make(map[string]bool)
+		h.cache = make(map[string]hashEntry, hashCacheCap)
+		h.failed = make(map[string]time.Time)
 	}
-	h.cache[exe] = sum
+	h.cache[exe] = hashEntry{sum: sum, size: size, mod: mod, checked: time.Now()}
 }
