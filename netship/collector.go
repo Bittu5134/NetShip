@@ -91,6 +91,9 @@ func (c *Collector) tick(ctx context.Context, now time.Time) error {
 		if meta.ppid > 0 {
 			if pm := c.meta.Get(meta.ppid); pm != nil {
 				proc.ParentGUID, proc.ParentName = pm.guid, pm.name
+				// Parents rarely own sockets of their own. Keep them in the meta
+				// cache, or every tick refetches exe, cwd and the origin stat.
+				alive[meta.ppid] = true
 			}
 		}
 		c.store.UpsertProcess(proc)
