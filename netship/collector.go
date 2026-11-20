@@ -267,6 +267,13 @@ func (c *Collector) evaluate(now time.Time) {
 			continue
 		}
 
+		// A failed lookup is not evidence of anything. Leave the flow unjudged so
+		// it can still be classified when the answer arrives, instead of writing
+		// it into the baseline as a remote we know.
+		if unclassified && proc.OriginRisk < 40 {
+			continue
+		}
+
 		remoteKey := f.RemoteIP + ":" + itoa(f.RemotePort) + "/" + strings.ToLower(f.Proto)
 		// known has to mean outbound history. A listener-only baseline row says
 		// nothing about that and would downgrade a first contact to
@@ -288,9 +295,6 @@ func (c *Collector) evaluate(now time.Time) {
 		where := describeRemote(f)
 		if unclassified {
 			where += " (ASN unresolved)"
-		}
-		if unclassified && proc.OriginRisk < 40 {
-			continue
 		}
 		switch {
 		case !known:
