@@ -331,27 +331,26 @@ func (s *Store) casesLocked() []Case {
 	for _, f := range s.findings {
 		byProc[f.ProcessGUID] = append(byProc[f.ProcessGUID], *f)
 	}
+	flowsByProc := map[string][]Flow{}
+	for _, f := range s.flows {
+		flowsByProc[f.ProcessGUID] = append(flowsByProc[f.ProcessGUID], *f)
+	}
 	cases := make([]Case, 0, len(byProc))
 	for guid, fs := range byProc {
 		p, ok := s.procs[guid]
 		if !ok {
 			continue
 		}
-		c := Case{Process: *p, Findings: fs}
+		sort.Slice(fs, func(i, j int) bool { return fs[i].Severity > fs[j].Severity })
+		c := Case{Process: *p, Findings: fs, Flows: flowsByProc[guid]}
 		for _, f := range fs {
 			if f.Severity > c.Severity {
 				c.Severity = f.Severity
 			}
 		}
-		sort.Slice(fs, func(i, j int) bool { return fs[i].Severity > fs[j].Severity })
 		c.Summary = fs[0].Title
 		if len(fs) > 1 {
 			c.Summary = fs[0].Title + " (+" + itoa(len(fs)-1) + " more)"
-		}
-		for _, f := range s.flows {
-			if f.ProcessGUID == guid {
-				c.Flows = append(c.Flows, *f)
-			}
 		}
 		cases = append(cases, c)
 	}
