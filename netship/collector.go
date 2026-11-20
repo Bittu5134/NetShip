@@ -364,8 +364,7 @@ func (c *Collector) evaluate(now time.Time) {
 	}
 }
 
-// Exactly once per process and kind. Dedupe lives here so the rules above stay
-// readable.
+// Once per process and kind.
 func (c *Collector) report(f Finding, proc Process) {
 	key := f.ProcessGUID + "|" + f.Kind
 	if c.announced[key] && f.Kind != KindFanout {
