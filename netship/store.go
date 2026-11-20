@@ -3,6 +3,7 @@ package netship
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -506,7 +507,9 @@ func (c *Collector) Run(ctx context.Context) error {
 			return c.store.Save()
 		case <-save.C:
 			if err := c.store.Save(); err != nil {
-				return err
+				// A full disk should not stop the watcher. What is on disk is still
+				// the last good baseline and the next tick tries again.
+				fmt.Printf("saving baseline: %v\n", err)
 			}
 		case <-ticker.C:
 			if err := c.tick(ctx, time.Now()); err != nil {
