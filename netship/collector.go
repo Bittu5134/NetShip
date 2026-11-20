@@ -244,8 +244,9 @@ func (c *Collector) evaluate(now time.Time) {
 		}
 
 		remoteKey := f.RemoteIP + ":" + itoa(f.RemotePort) + "/" + strings.ToLower(f.Proto)
-		// known means outbound history, not just a baseline row: a listener-only
-		// record would otherwise downgrade a first contact to NEW_DESTINATION.
+		// known has to mean outbound history. A listener-only baseline row says
+		// nothing about that and would downgrade a first contact to
+		// NEW_DESTINATION.
 		known := c.hasOutboundBaseline(proc.Key())
 		_, seenRemote, firstSeen := c.store.LookupBinary(proc.Key(), remoteKey)
 		c.evaluated[f.Key] = true

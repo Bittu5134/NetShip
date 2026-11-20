@@ -279,8 +279,8 @@ func (s *Store) EnrichFlow(key string, info ASNInfo) {
 	}
 }
 
-// Remotes we deliberately did not store because they are CDN or cloud. Shown in
-// the UI so the filter is visible instead of suspected.
+// Cloud and CDN remotes we dropped instead of storing. The count is shown in
+// the UI, so the filter can be seen working.
 func (s *Store) Suppress(n int) {
 	s.mu.Lock()
 	s.suppress += n
