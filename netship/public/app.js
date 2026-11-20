@@ -1,7 +1,7 @@
-/* netship dashboard — AniList-style stats layout.
-   Three views over one snapshot endpoint. Everything the user can change
-   (view, filter, sort, expansion, selection) lives in `state` and survives the
-   3s refresh. No build step, no dependencies, works offline. */
+// netship dashboard, AniList-style stats layout.
+// Three views over one snapshot endpoint. Everything the user can change
+// (view, filter, sort, expansion, selection) lives in state and survives the
+// 3s refresh. No build step, no dependencies, works offline.
 
 'use strict';
 
@@ -29,7 +29,7 @@ const COLORS = {
 
 const SEV_NAME = { 3: 'high', 2: 'medium', 1: 'low' };
 
-/* ── formatting ──────────────────────────────────────────── */
+// formatting
 
 const esc = (s) =>
   String(s ?? '').replace(/[&<>"']/g, (c) =>
@@ -66,7 +66,7 @@ const shortPath = (p, keep = 40) => (!p ? '' : p.length <= keep ? p : '…' + p.
 
 const haystack = (parts) => parts.filter(Boolean).join(' ').toLowerCase();
 
-/* ── models ──────────────────────────────────────────────── */
+// models
 
 function casesModel() {
   return (state.data?.cases || []).map((c) => {
@@ -151,7 +151,7 @@ function countryStats() {
   return [...by.values()].sort((a, b) => b.count - a.count || a.iso.localeCompare(b.iso));
 }
 
-/* ── sorting / filtering ─────────────────────────────────── */
+// sorting / filtering
 
 const byTime = (a, b) => Date.parse(b.time) - Date.parse(a.time);
 
@@ -190,7 +190,7 @@ function currentRows() {
   );
 }
 
-/* ── small components ────────────────────────────────────── */
+// small components
 
 function bars(items, colors) {
   const max = Math.max(1, ...items.map((i) => i.value));
@@ -253,7 +253,7 @@ function sideCard(title, sub, body) {
   </section>`;
 }
 
-/* ── views ───────────────────────────────────────────────── */
+// views
 
 function renderCases(rows) {
   const body = rows
@@ -453,7 +453,7 @@ function renderDestinations(rows) {
   </section>`;
 }
 
-/* ── aside ───────────────────────────────────────────────── */
+// aside
 
 function renderAside() {
   const findings = state.data?.findings || [];
@@ -599,7 +599,7 @@ function socketsCard(d) {
     </div>`);
 }
 
-/* ── tiles / status ──────────────────────────────────────── */
+// tiles / status
 
 function renderTiles() {
   const d = state.data;
@@ -662,7 +662,7 @@ function applyDemoState(demo, running = false) {
   }
 }
 
-/* ── empty states ────────────────────────────────────────── */
+// empty states
 
 function emptyState() {
   const d = state.data;
@@ -686,3 +686,273 @@ function emptyState() {
     ];
   }
   if (state.view === 'processes') {
+    return ['Nothing watched yet', 'No sockets have been attributed. Start the watcher and wait for the next poll.'];
+  }
+  if (state.view === 'map') {
+    return ['No external destinations recorded.', ''];
+  }
+  return ['No destinations', 'Nothing has survived the CDN filter this session.'];
+}
+
+const NOTE = `<section class="card note-card">
+    <span class="note-mark"></span>
+    <p>
+      <b>What survives the filter.</b> Every external endpoint is classified by ASN before it is stored.
+      Traffic to cloud and CDN providers is counted in <b>suppressed</b> and then dropped, because a browser
+      talking to Fastly is not a finding. What remains is the part of the network edge specific to this
+      machine — the only part worth remembering.
+    </p>
+  </section>`;
+
+// render
+
+function copyable(text) {
+  if (!text) return '<span class="dim">—</span>';
+  return `<span data-copy="${esc(text)}" title="click to copy">${esc(shortPath(text, 70))}</span>`;
+}
+
+function hashRow(hash) {
+  if (!hash) return '';
+  const h = String(hash);
+  return `<div class="kv"><dt>sha256</dt><dd><span data-copy="${esc(h)}" title="${esc(h)}">${esc(h.slice(0, 16))}…</span> <a class="link" href="https://www.virustotal.com/gui/file/${esc(h)}" target="_blank" rel="noopener noreferrer">virustotal</a></dd></div>`;
+}
+
+function render() {
+  const rows = currentRows();
+  const view = $('view');
+  const empty = $('empty');
+
+  $('view-title').textContent = state.view.charAt(0).toUpperCase() + state.view.slice(1);
+  $('export').disabled = rows.length === 0;
+
+  if (rows.length === 0) {
+    view.innerHTML = '';
+    const es = emptyState();
+    if (es) {
+      $('empty-title').textContent = es[0];
+      $('empty-body').innerHTML = es[1];
+      empty.hidden = false;
+    } else {
+      empty.hidden = true;
+    }
+  } else {
+    empty.hidden = true;
+    if (state.view === 'map') {
+      view.innerHTML = `<section class="card map-card"><canvas class="map-canvas" aria-label="contacted countries"></canvas></section>`;
+      renderMap(view.querySelector('.map-canvas'), countryStats());
+    } else {
+      view.innerHTML =
+        (state.view === 'cases' ? renderCases(rows)
+          : state.view === 'processes' ? renderProcesses(rows)
+          : renderDestinations(rows)) + NOTE;
+    }
+  }
+
+  renderAside();
+  renderTiles();
+  paintStatus();
+
+  if (state.sel >= rows.length) state.sel = rows.length - 1;
+  highlightSelection();
+}
+
+function highlightSelection() {
+  document.querySelectorAll('.case, tbody tr[data-key]').forEach((n) => n.classList.remove('rowsel'));
+  const nodes = [...document.querySelectorAll('#view .case, #view tbody tr[data-key]')];
+  if (state.sel < 0 || state.sel >= nodes.length) return;
+  const node = nodes[state.sel];
+  if (node.classList.contains('case')) node.querySelector('.case-head')?.classList.add('rowsel');
+  else node.classList.add('rowsel');
+}
+
+// data
+
+async function poll() {
+  if (document.hidden) return;
+  try {
+    const res = await fetch('/api/state', { cache: 'no-store' });
+    if (!res.ok) throw new Error('http ' + res.status);
+    const data = await res.json();
+    state.data = data;
+    state.lastOk = Date.now();
+    state.failing = false;
+
+    // Idle machines produce identical payloads; skip the DOM work.
+    // generated_at changes every poll, so the signature excludes it. Mode
+    // flags are folded in so a demo↔live switch can never leave stale UI,
+    // even when both sides happen to have identical counters.
+    const sig =
+      JSON.stringify(data.stats) + '|' + (data.cases || []).length +
+      '|' + (data.demo ? 1 : 0) + '|' + (data.learning ? 1 : 0);
+    if (sig !== state.lastPayload) {
+      state.lastPayload = sig;
+      render();
+    } else {
+      paintStatus();
+    }
+  } catch {
+    state.failing = true;
+    paintStatus();
+  }
+}
+
+async function control(path, btn) {
+  btn.disabled = true;
+  try {
+    await fetch(path, { method: 'POST' });
+  } finally {
+    btn.disabled = false;
+    await poll();
+  }
+}
+
+// interaction
+
+function syncNav() {
+  document.querySelectorAll('.tab').forEach((b) => b.classList.toggle('is-on', b.dataset.view === state.view));
+}
+
+function setView(view) {
+  state.view = view;
+  state.sel = -1;
+  history.replaceState(null, '', '#' + view);
+  syncNav();
+  render();
+}
+
+function toggleKey(key) {
+  state.expanded.has(key) ? state.expanded.delete(key) : state.expanded.add(key);
+  render();
+}
+
+function bind() {
+  document.querySelectorAll('.tab').forEach((b) => b.addEventListener('click', () => setView(b.dataset.view)));
+
+  $('q').addEventListener('input', (e) => {
+    state.q = e.target.value.trim().toLowerCase();
+    state.sel = -1;
+    render();
+  });
+
+  document.querySelectorAll('.chip').forEach((chip) =>
+    chip.addEventListener('click', () => {
+      const sev = Number(chip.dataset.sev);
+      state.sev.has(sev) ? state.sev.delete(sev) : state.sev.add(sev);
+      chip.classList.toggle('is-on', state.sev.has(sev));
+      state.sel = -1;
+      render();
+    })
+  );
+
+  $('sort').addEventListener('change', (e) => {
+    state.sort = e.target.value;
+    render();
+  });
+
+  $('toggle').addEventListener('click', (e) =>
+    control(state.data?.running ? '/api/scan/stop' : '/api/scan/start', e.currentTarget));
+
+  const toggleDemo = (btn) =>
+    control(state.data?.demo ? '/api/demo/stop' : '/api/demo/start', btn);
+  $('demo').addEventListener('click', (e) => toggleDemo(e.currentTarget));
+  $('demo-exit').addEventListener('click', (e) => toggleDemo(e.currentTarget));
+
+  $('export').addEventListener('click', () => {
+    const rows = currentRows().map((r) => r.raw);
+    const blob = new Blob(
+      [JSON.stringify({ view: state.view, exported_at: new Date().toISOString(), rows }, null, 2)],
+      { type: 'application/json' }
+    );
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = `netship-${state.view}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, '')}.json`;
+    a.click();
+    URL.revokeObjectURL(a.href);
+  });
+
+  $('view').addEventListener('click', (e) => {
+    const copy = e.target.closest('[data-copy]');
+    if (copy) {
+      navigator.clipboard?.writeText(copy.dataset.copy);
+      return;
+    }
+    const sortBtn = e.target.closest('th.sortable button');
+    if (sortBtn) {
+      state.sort = sortBtn.dataset.sort;
+      if ([...$('sort').options].some((o) => o.value === state.sort)) $('sort').value = state.sort;
+      render();
+      return;
+    }
+    const head = e.target.closest('.case-head');
+    if (head) {
+      state.sel = [...document.querySelectorAll('#view .case')].indexOf(head.closest('.case'));
+      toggleKey(head.closest('.case').dataset.key);
+      return;
+    }
+    const tr = e.target.closest('tbody tr[data-key]');
+    if (tr && state.view === 'processes') toggleKey(tr.dataset.key);
+  });
+
+  document.addEventListener('keydown', (e) => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName);
+
+    if (e.key === '/' && !typing) {
+      e.preventDefault();
+      $('q').focus();
+      $('q').select();
+      return;
+    }
+    if (e.key === 'Escape') {
+      if (typing) document.activeElement.blur();
+      else if (state.q) { $('q').value = ''; state.q = ''; render(); }
+      return;
+    }
+    if (typing) return;
+
+    if (e.key === '1') return setView('cases');
+    if (e.key === '2') return setView('processes');
+    if (e.key === '3') return setView('destinations');
+    if (e.key === '4') return setView('map');
+
+    const nodes = [...document.querySelectorAll('#view .case, #view tbody tr[data-key]')];
+    if (!nodes.length) return;
+
+    if (e.key === 'j' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      state.sel = Math.min(nodes.length - 1, state.sel + 1);
+      highlightSelection();
+    } else if (e.key === 'k' || e.key === 'ArrowUp') {
+      e.preventDefault();
+      state.sel = Math.max(0, state.sel - 1);
+      highlightSelection();
+    } else if (e.key === 'Enter' && state.sel >= 0) {
+      e.preventDefault();
+      toggleKey(nodes[state.sel].dataset.key);
+    }
+  });
+
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden) poll();
+  });
+}
+
+// boot
+
+const VIEWS = ['cases', 'processes', 'destinations', 'map'];
+
+function applyHash() {
+  const h = location.hash.replace('#', '');
+  if (VIEWS.includes(h)) state.view = h;
+  syncNav();
+  if (state.data) render();
+}
+
+bind();
+applyHash();
+window.addEventListener('hashchange', () => {
+  state.sel = -1;
+  applyHash();
+});
+poll();
+setInterval(poll, 3000);
+setInterval(paintStatus, 1000);
