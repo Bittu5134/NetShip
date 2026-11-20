@@ -15,7 +15,7 @@ It is one Go binary that reads the socket table and the process table. Nothing t
 ## How it works
 
 - It polls the socket table every 2 seconds and throws most of it away: its own sockets, sockets with no owning process, loopback, private addresses, and the teardown states.
-- Each socket is attributed to its executable and process start time, so a browser restarted forty times is one subject, not forty.
+- Each socket is attributed to its executable and start time. For the baseline that means a browser restarted forty times is one subject, not forty, though the live case list still shows one card per running instance.
 - Every remote is looked up over plain DNS (Team Cymru). If the ASN belongs to a cloud or CDN provider the contact is dropped before anything is stored, and the dashboard counts how much went that way, so you can see the filter working.
 - Whatever survives is compared against `baseline.json`.
 - Only the difference becomes a finding.
@@ -41,7 +41,7 @@ netship - what is new on this machine's network edge
   poll       every 2s, silent for the first 5m
 ```
 
-Open the URL and press **Start**. The first 5 minutes are silent on purpose, that is the baseline filling up. Quiet after that is also normal, and an empty case list is the healthy state on a laptop.
+The watcher starts with the binary, so by the time you open the URL it is already running. **Stop** and **Start** control it from there. The first 5 minutes are silent on purpose, that is the baseline filling up. Quiet after that is also normal, and an empty case list is the healthy state on a laptop.
 
 > [!NOTE]
 > **Demo** seeds a throwaway store with three fake cases on documentation addresses (RFC 5737), so you can see what a finding looks like without waiting for one on your own machine. The watcher does not run in demo mode.
@@ -69,7 +69,7 @@ The map view plots one dot per contacted country, sized by flow count. The land 
 - `listen`: bound to loopback on purpose. This dashboard lists your process names, command lines, usernames and destinations, and it has no authentication.
 - `interval`: how often the socket table is read. Under a second it mostly re-reads the same sockets.
 - `learning`: how long to stay silent at startup while the baseline fills.
-- `enrich`: `false` turns off the DNS lookups. Without it, nothing can be classified as a CDN, so the tool still works but reports far less.
+- `enrich`: `false` turns off the DNS lookups. Every remote is then unknown, so only a process with a bad origin can raise anything, and the CDN filter stops running.
 
 Missing keys keep their defaults, so a partial file is fine. Deleting the file re-creates it.
 
@@ -108,5 +108,7 @@ Severity stacks the facts about one process: an untrusted origin plus a first ev
 - The map draws every country on one canvas. A few hundred destinations is fine, a few thousand is not.
 - A very large baseline takes a moment to load before the dashboard has anything to show.
 - The demo store is seeded once per process and thrown away on exit, so the charts always start from the same place.
-- On a machine with many short-lived processes, the baseline file grows one key per executable until the 90 day TTL catches up.
+- On a machine with many short-lived processes, the baseline file grows one key per executable until the 90 day TTL catches up. The whole file is rewritten every 30s.
+- The sha256 in a case is shown, not used. A binary replaced at the same path keeps the old baseline history.
+- Findings survive a restart, flows do not. After a restart the case list is the old one until something new happens.
 - Tested on Linux. On macOS the socket table comes from `lsof`, because gopsutil hands back pid 0 there and everything looked unattributable; that path is written but has not been run on a real Mac. Windows compiles and has a real pid source, and it has not been run either.
