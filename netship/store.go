@@ -146,10 +146,6 @@ func (s *Store) Prune(olderThan time.Duration, now time.Time) (flowKeys, procGUI
 			procGUIDs = append(procGUIDs, guid)
 		}
 	}
-	for guid := range s.procs {
-		delete(dead, guid)
-	}
-
 	for key, f := range s.flows {
 		if f.LastSeen.Before(cutoff) {
 			delete(s.flows, key)
@@ -205,23 +201,6 @@ func (s *Store) Remember(key, name, remote string, now time.Time) {
 		}
 		b.Remotes[remote] = true
 	}
-}
-
-// BaselineFor hands out a copy. Sharing Remotes would give the caller a map
-// that Remember mutates; safe only while the collector is the only reader.
-func (s *Store) BaselineFor(key string) (*Binary, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
-	b, ok := s.baseline[key]
-	if !ok {
-		return nil, false
-	}
-	cp := *b
-	cp.Remotes = make(map[string]bool, len(b.Remotes))
-	for r := range b.Remotes {
-		cp.Remotes[r] = true
-	}
-	return &cp, true
 }
 
 func (s *Store) HasOutboundRemote(key string) bool {
@@ -414,7 +393,6 @@ type processMeta struct {
 	ppid       int32
 	name       string
 	exe        string
-	hash       string
 	cmdline    string
 	cwd        string
 	user       string
