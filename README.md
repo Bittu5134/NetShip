@@ -2,13 +2,13 @@
 
 # netship
 
-**A process-level egress monitor that stays quiet until something changes.**
+**Remembers where each program on the machine has connected, so anything new stands out.**
 
 <img src="screenshots/cases.png" width="880" alt="netship cases dashboard">
 
 </div>
 
-A network monitor that shows you every connection is a log you stop reading. netship keeps one baseline per executable: every remote endpoint that binary has ever reached. When a binary goes somewhere new, you get a case. The rest of the time it does nothing.
+Every program on this machine leaves a trail of places it has connected to. netship keeps that trail, and when a program reaches somewhere new you get a case with the process, the destination, who owns it, and what stood out about it.
 
 It is one Go binary that reads the socket table and the process table. Nothing to install alongside it, and it never needs root.
 
@@ -20,7 +20,7 @@ It is one Go binary that reads the socket table and the process table. Nothing t
 - Whatever survives is compared against `baseline.json`.
 - Only the difference becomes a finding.
 
-The numbers this came from: one minute of ordinary desktop use produced 356 rows, 70 of them sockets that had already closed, 69 with no owning process, and zero findings.
+The numbers this came from: one minute of ordinary desktop use produced 356 rows, 70 of them sockets that had already closed and 69 with no owning process.
 
 ## Quickstart
 
@@ -38,10 +38,10 @@ netship - what is new on this machine's network edge
   dashboard  http://127.0.0.1:8787
   config     ~/.config/netship/config.json
   baseline   ~/.local/share/netship (0 binaries)
-  poll       every 2s, silent for the first 5m
+  poll       every 2s, baseline for the first 5m
 ```
 
-The watcher starts with the binary, so by the time you open the URL it is already running. **Stop** and **Start** control it from there. The first 5 minutes are silent on purpose, that is the baseline filling up. Quiet after that is also normal, and an empty case list is the healthy state on a laptop.
+The watcher starts with the binary, so by the time you open the URL it is already running. **Stop** and **Start** control it from there. The first 5 minutes go into the baseline; after that, new destinations appear as cases.
 
 > [!NOTE]
 > **Demo** seeds a throwaway store with three fake cases on documentation addresses (RFC 5737), so you can see what a finding looks like without waiting for one on your own machine. The watcher does not run in demo mode.
@@ -68,7 +68,7 @@ The map view plots one dot per contacted country, sized by flow count. The land 
 
 - `listen`: bound to loopback on purpose. This dashboard lists your process names, command lines, usernames and destinations, and it has no authentication.
 - `interval`: how often the socket table is read. Under a second it mostly re-reads the same sockets.
-- `learning`: how long to stay silent at startup while the baseline fills.
+- `learning`: how long the baseline takes to fill at startup.
 - `enrich`: `false` turns off the DNS lookups. Every remote is then unknown, so only a process with a bad origin can raise anything, and the CDN filter stops running.
 
 Missing keys keep their defaults, so a partial file is fine. Deleting the file re-creates it.
