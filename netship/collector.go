@@ -185,6 +185,23 @@ func (c *Collector) evaluate(now time.Time) {
 		procs[p.GUID] = p
 	}
 
+	// The command line belongs to the process, not to a socket. Checking it here
+	// also catches `sh -c "curl ... | sh"`, where the shell holds the pipe and
+	// curl holds the connection, and it does not care what the ASN says.
+	if !learning {
+		for _, p := range procs {
+			if why, ok := suspiciousCmdline(p.Cmdline); ok {
+				c.report(Finding{
+					ID: shortID("cmd", p.GUID), Kind: KindSuspicious,
+					Severity: SevHigh, ProcessGUID: p.GUID, ProcessName: p.Name,
+					Title:     "Download-and-execute shaped command line",
+					Evidence:  []string{why, truncate(p.Cmdline, 240)},
+					FirstSeen: now, LastSeen: now, Count: 1,
+				}, p)
+			}
+		}
+	}
+
 	const unclassifiedGrace = 20 * time.Second
 	for i := range snap.Flows {
 		f := &snap.Flows[i]
@@ -319,16 +336,6 @@ func (c *Collector) evaluate(now time.Time) {
 				Severity: SevMedium, ProcessGUID: proc.GUID, ProcessName: proc.Name,
 				Title:     "Risky origin went out: " + proc.Name,
 				Evidence:  append([]string{"connected to " + where}, proc.OriginWhy...),
-				FirstSeen: now, LastSeen: now, Count: 1,
-			}, proc)
-		}
-
-		if why, ok := suspiciousCmdline(proc.Cmdline); ok {
-			c.report(Finding{
-				ID: shortID("cmd", proc.GUID), Kind: KindSuspicious,
-				Severity: SevHigh, ProcessGUID: proc.GUID, ProcessName: proc.Name,
-				Title:     "Download-and-execute shaped command line",
-				Evidence:  []string{why, truncate(proc.Cmdline, 240)},
 				FirstSeen: now, LastSeen: now, Count: 1,
 			}, proc)
 		}
