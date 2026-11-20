@@ -56,7 +56,7 @@ func (c *Collector) InLearning(now time.Time) bool { return now.Sub(c.started) <
 const liveTTL = 30 * time.Minute
 
 func (c *Collector) tick(ctx context.Context, now time.Time) error {
-	conns, err := psnet.Connections("all")
+	conns, err := socketTable()
 	if err != nil {
 		return err
 	}
